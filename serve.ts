@@ -1,10 +1,10 @@
-// A small static server for game/ (Node 22, standard library only).
-//
-// Run `node serve.ts` and open http://localhost:8080 to play the entry
-// locally — no build step, no network. `--port <n>` picks another port.
-// It serves only files under game/, sends the MIME types a browser game
-// needs, and never follows a path outside that folder. This is a
-// development convenience, not a web server for the internet.
+// A tiny static server for game/ (Node 22, standard library only), so the
+// entry can be played locally without a build step:
+//   node serve.ts            serves game/ on http://localhost:8080
+//   node serve.ts --port 9000 --host 0.0.0.0
+// It sends the MIME types a browser game needs, refuses any path outside
+// game/, answers GET /health with {"ok":true}, and logs each request: this
+// is a development convenience, not a web server for the internet.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -12,11 +12,13 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
 const args = process.argv.slice(2);
-const portArg = args.indexOf('--port');
-const wanted = portArg === -1 ? 8080 : Number(args[portArg + 1]);
-const port = Number.isInteger(wanted) && wanted > 0 && wanted < 65536 ? wanted : 8080;
+const portIndex = args.indexOf('--port');
+const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
+const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+const hostIndex = args.indexOf('--host');
+const host = hostIndex === -1 ? '127.0.0.1' : (args[hostIndex + 1] || '127.0.0.1');
 
-const MIME = {
+const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8',
@@ -41,15 +43,17 @@ const MIME = {
 };
 
 createServer((request, response) => {
+  const started = Date.now();
   const url = new URL(request.url ?? '/', 'http://localhost');
-  // A tiny health check for the screenshot tooling: GET /health answers
-  // {"ok":true} without touching the game files.
+  response.on('finish', () => {
+    console.log(`${request.method} ${url.pathname} -> ${response.statusCode} (${Date.now() - started}ms)`);
+  });
   if (url.pathname === '/health') {
     response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
-    response.end(JSON.stringify({ ok: true }));
+    response.end('{"ok":true}');
     return;
   }
-  let pathname;
+  let pathname: string;
   try {
     pathname = decodeURIComponent(url.pathname);
   } catch {
@@ -62,7 +66,7 @@ createServer((request, response) => {
     response.writeHead(403).end('forbidden');
     return;
   }
-  let size;
+  let size: number;
   try {
     const stats = statSync(file);
     if (!stats.isFile()) throw new Error('not a file');
@@ -71,15 +75,12 @@ createServer((request, response) => {
     response.writeHead(404).end('not found');
     return;
   }
-  // One log line per request, so a playtest or screenshot run leaves a
-  // trail of what was actually served.
-  console.log(`${new Date().toISOString()} ${request.method} ${pathname} ${size} bytes`);
   response.writeHead(200, {
     'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
     'content-length': size,
     'cache-control': 'no-store',
   });
   createReadStream(file).pipe(response);
-}).listen(port, '127.0.0.1', () => {
-  console.log(`Palmera Bay is on http://localhost:${port}`);
+}).listen(port, host, () => {
+  console.log(`game/ is on http://${host}:${port}`);
 });

@@ -1,64 +1,50 @@
-// Palmera Bay — Sunset Run: the gta6-01 entry point (Node 22, stdlib only).
-//
-// What this program does: it gathers the entry — the playable game in
-// game/ and the four screenshots in screenshots/ — into the output
-// directory and writes dossier.json there, the summary the house judge
-// reads. The dossier is built by the vendored make.fun library at
-// vendor/makefun-game.ts, which is the kit's own copy and is left alone.
-//
-// The game itself is plain static files: game/index.html plus its ES
-// modules, canvas only, no library and no network request, so a desktop
-// browser opens it offline and plays.
-//
-// To play locally first: `node serve.ts`, then open http://localhost:8080.
-// To hand it in outside the grader's container, MAKEFUN_OUTPUT_DIR stands
+// Palmera Bay — Sunset Run: the handoff program (Node 22, stdlib only).
+// It copies game/ and screenshots/ from beside this file to /output and
+// writes /output/dossier.json with the vendored make.fun library, so the
+// judge can read the game. Outside the grader, MAKEFUN_OUTPUT_DIR stands
 // in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 //
-import { cpSync, existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+// The scorer refuses any screenshot over 256 KiB, so this program checks
+// first and says so plainly instead of handing in a broken entry.
+
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const MAX_SCREENSHOT_BYTES = 262144;
 
-// Pre-flight: refuse to hand in a half-built entry. The game folder and the
-// four screenshots must be beside this file, or the dossier would describe
-// a game that is not there.
-if (!existsSync(join(here, 'game', 'index.html'))) {
-  throw new Error('game/index.html is missing — the entry is not ready to hand in');
-}
-for (const shot of ['1-chase.jpg', '2-pier.jpg', '3-race.jpg', '4-title.jpg']) {
-  if (!existsSync(join(here, 'screenshots', shot))) {
-    throw new Error(`screenshots/${shot} is missing — re-take the screenshots first`);
-  }
-  // The scorer refuses a screenshot over 256 KiB, so refuse it here first
-  // with a message that says which shot to re-take, smaller.
-  const shotBytes = statSync(join(here, 'screenshots', shot)).size;
-  if (shotBytes > 262144) {
-    throw new Error(`screenshots/${shot} is ${shotBytes} bytes — over the 256 KiB cap, re-take it at a lower quality`);
+// A screenshot over the cap fails the whole entry: refuse it loudly.
+const shotsDir = join(here, 'screenshots');
+if (existsSync(shotsDir)) {
+  for (const name of readdirSync(shotsDir)) {
+    if (name.startsWith('.')) continue;
+    const file = join(shotsDir, name);
+    const size = statSync(file).size;
+    if (size > MAX_SCREENSHOT_BYTES) {
+      throw new Error(`screenshot ${name} is ${size} bytes, over the 256 KiB cap — re-take it smaller`);
+    }
   }
 }
 
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) {
-  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
-}
+if (existsSync(shotsDir)) cpSync(shotsDir, join(out, 'screenshots'), { recursive: true });
 
-// The scorer's caps, from the kit's reference/gate.json. Only text_max_bytes
-// shapes the dossier's size; the rest refuse an entry the scorer would
-// refuse anyway — more than 4 screenshots, one over 256 KiB, more than 993
-// files in game/ or 48 MiB of game files in all, or a game/ path over 1000
-// bytes (game/ counts beside /output's own 1000-entry cap, its screenshots/
-// and dossier.json).
+// The scorer's own caps (reference/gate.json): only text_max_bytes shapes
+// the bytes; the others refuse an entry the scorer would refuse (more than
+// 4 screenshots or one over 256 KiB; more than 993 files in game/ or 48 MiB
+// of game files, in all, or a path under game/ over 1000 bytes: game/ counts
+// beside /output's own 1000-entry cap, its screenshots/ and dossier.json).
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {
     text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
+    screenshots: { max: 4, max_bytes: MAX_SCREENSHOT_BYTES },
     game_max_files: 993,
     game_max_bytes: 50331648,
     game_path_max_bytes: 1000,
