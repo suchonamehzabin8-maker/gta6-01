@@ -1,88 +1,69 @@
-// Keyboard and mouse, read once per frame. Keys are tracked by `code`, so
-// the layout does not matter; the mouse position is in logical viewport
-// pixels. `pressed` records keys hit since the last frame was consumed, so a
-// single tap (E to steal a car, 1 or 2 to swap weapons, Esc to pause) fires
-// exactly once. Holding the mouse keeps an automatic weapon firing, and the
-// wheel cycles through the weapons you own.
-export function createInput() {
-  return {
-    keys: {},
-    up: false,
-    down: false,
-    left: false,
-    right: false,
-    handbrake: false,
-    firing: false,
-    mouseX: 0,
-    mouseY: 0,
-    mouseDown: false,
-    mouseClicked: false,
-    pressed: {}, // keys pressed since the last frame was consumed
-    wheel: 0, // wheel ticks since the last frame was consumed
-  };
-}
+// Palmera Bay — Sunset Run: keyboard and mouse.
+// Tracks held keys, the mouse position over the canvas, clicks and the
+// wheel. The game polls this each frame; nothing here draws anything.
 
-export function attachInput(input, canvas) {
+export function createInput(canvas) {
+  const input = {
+    keys: new Set(),
+    mouse: { x: 0, y: 0, down: false },
+    wheel: 0,
+    pressed: new Set(), // keys pressed since the last poll
+    clicked: false,
+  };
+
+  const keyName = (e) => e.code;
+
   window.addEventListener('keydown', (e) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) {
       e.preventDefault();
     }
-    if (!input.keys[e.code]) input.pressed[e.code] = true;
-    input.keys[e.code] = true;
+    if (!e.repeat) input.pressed.add(keyName(e));
+    input.keys.add(keyName(e));
   });
   window.addEventListener('keyup', (e) => {
-    input.keys[e.code] = false;
-  });
-  window.addEventListener('blur', () => {
-    input.keys = {};
-    input.mouseDown = false;
+    input.keys.delete(keyName(e));
   });
   canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    input.mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    input.mouseY = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const r = canvas.getBoundingClientRect();
+    input.mouse.x = e.clientX - r.left;
+    input.mouse.y = e.clientY - r.top;
   });
-  canvas.addEventListener('mousedown', () => {
-    input.mouseDown = true;
-    input.mouseClicked = true;
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) {
+      input.mouse.down = true;
+      input.clicked = true;
+    }
   });
   window.addEventListener('mouseup', () => {
-    input.mouseDown = false;
+    input.mouse.down = false;
   });
-  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
-    input.wheel += e.deltaY > 0 ? 1 : -1;
+    input.wheel += Math.sign(e.deltaY);
   }, { passive: false });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  return input;
 }
 
-export function pollInput(input) {
-  const k = input.keys;
-  input.up = !!(k.KeyW || k.ArrowUp);
-  input.down = !!(k.KeyS || k.ArrowDown);
-  input.left = !!(k.KeyA || k.ArrowLeft);
-  input.right = !!(k.KeyD || k.ArrowRight);
-  input.handbrake = !!k.Space;
-  // Hold the mouse to keep firing an automatic weapon; a click fires the pistol.
-  input.firing = input.mouseDown || input.mouseClicked;
+export function held(input, ...codes) {
+  return codes.some((c) => input.keys.has(c));
 }
 
-export function wasPressed(input, code) {
-  const hit = !!input.pressed[code];
-  if (hit) delete input.pressed[code];
-  return hit;
+// True once for the frame the key went down; call after polling.
+export function wasPressed(input, ...codes) {
+  return codes.some((c) => input.pressed.has(c));
 }
 
-// Wheel ticks since the last frame, consumed once: positive scrolls down
-// through the weapons, negative scrolls up.
-export function consumeWheel(input) {
-  const ticks = input.wheel || 0;
+export function endFrame(input) {
+  input.pressed.clear();
+  input.clicked = false;
   input.wheel = 0;
-  return ticks;
 }
 
-export function endFrameInput(input) {
-  input.pressed = {};
-  input.mouseClicked = false;
-  input.wheel = 0;
+// Movement axes from WASD/arrows: {x, y} in screen space, y down.
+export function moveAxes(input) {
+  return {
+    x: (held(input, 'KeyD', 'ArrowRight') ? 1 : 0) - (held(input, 'KeyA', 'ArrowLeft') ? 1 : 0),
+    y: (held(input, 'KeyS', 'ArrowDown') ? 1 : 0) - (held(input, 'KeyW', 'ArrowUp') ? 1 : 0),
+  };
 }

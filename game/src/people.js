@@ -1,236 +1,159 @@
-// Pedestrians and police on foot. Peds stroll the sidewalks, cross the
-// street at intersections, flag down the player's taxi, and run when they
-// hear gunfire or see a car coming at them too fast. Cops on foot chase the
-// player when the wanted level is up and try to arrest them up close.
+// Palmera Bay — Sunset Run: the people of the bay.
+// Pedestrians who stroll the sidewalks, joggers on the beach road, vendors
+// at their stalls, foot cops who try to arrest you, and the Bay Syndicate's
+// goons — four of them, three punches each, waiting at the stadium.
+
 import { WORLD } from './config.js';
-import { pick, range, chance } from './random.js';
-import { isRoad, isIntersection, nearestRoadPoint, resolveBuildings, clampWorld } from './city.js';
+import { rrange, pick, chance, angleTo, clamp } from './random.js';
+import { nearestRoadPoint } from './city.js';
 
-const PED_NAMES = ['Rosa', 'Kenny', 'Priya', 'Marco', 'Lena', 'Tomas', 'Aisha', 'Ben', 'Cleo', 'Hank', 'Nina', 'Omar'];
-const PED_COLORS = ['#e74c3c', '#3498db', '#f1c40f', '#1abc9c', '#e67e22', '#9b59b6', '#ecf0f1', '#fd79a8', '#00cec9', '#fdcb6e'];
+let nextId = 1;
 
-export function makePed(x, y, random) {
+export function makePerson(x, y, kind, opts = {}) {
   return {
+    id: nextId++,
+    kind, // 'walker' | 'jogger' | 'vendor' | 'cop' | 'goon'
     x, y,
-    angle: range(random, 0, Math.PI * 2),
-    speed: range(random, 28, 52),
-    name: pick(random, PED_NAMES),
-    color: pick(random, PED_COLORS),
-    kind: 'ped',
-    role: 'stroll', // 'stroll' | 'jogger' | 'vendor'
-    flee: 0,
-    wait: range(random, 0, 3),
-    taxi: chance(random, 0.25),
-    dead: false,
+    angle: opts.angle ?? 0,
+    speed: 0,
+    hp: kind === 'goon' ? 3 : 1,
+    state: 'idle', // idle | walk | flee | chase | attack | down
+    stateT: 0,
+    target: null,
+    color: opts.color || '#e8e8e8',
     panic: 0,
-    crossing: false,
-    goal: null,
-    hp: 1,
   };
 }
 
-// A jogger: fast, on the beach road, running laps of the bay front.
-// Joggers never hail taxis and never wait — they are always moving.
-export function makeJogger(x, y, random) {
-  const ped = makePed(x, y, random);
-  ped.role = 'jogger';
-  ped.speed = range(random, 110, 135);
-  ped.wait = 0;
-  ped.taxi = false;
-  ped.goal = { x: x < 1800 ? 3400 : 200, y: 2330 };
-  return ped;
-}
-
-// A street vendor: stands at a stall all day, selling whatever the bay
-// is buying. Vendors never stroll and never hail taxis.
-export function makeVendor(x, y, random) {
-  const ped = makePed(x, y, random);
-  ped.role = 'vendor';
-  ped.speed = 0;
-  ped.wait = 999;
-  ped.taxi = false;
-  return ped;
-}
-
-export function spawnPeds(random, count) {
-  const peds = [];
-  for (let i = 0; i < count; i += 1) {
-    const x = range(random, 150, WORLD.width - 150);
-    const y = range(random, 150, 2350);
-    peds.push(makePed(x, y, random));
+export function spawnCrowd(city, rng) {
+  const people = [];
+  for (let i = 0; i < 34; i++) {
+    const p = nearestRoadPoint(city, rrange(rng, 150, WORLD.w - 400), rrange(rng, 150, WORLD.h - 150));
+    const side = (rng() < 0.5 ? -1 : 1) * 44;
+    const x = p.x + (p.horizontal ? 0 : side);
+    const y = p.y + (p.horizontal ? side : 0);
+    const w = makePerson(x, y, 'walker', { color: pick(rng, ['#e8e8e8', '#d9a05a', '#7aa8d9', '#c96a7a', '#8ad98a']) });
+    w.state = 'walk';
+    w.angle = p.horizontal ? (rng() < 0.5 ? 0 : Math.PI) : (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+    w.speed = rrange(rng, 40, 75);
+    people.push(w);
   }
-  // Joggers on the beach road, both directions.
-  for (let i = 0; i < 6; i += 1) {
-    peds.push(makeJogger(range(random, 200, 3400), 2330 + range(random, -20, 20), random));
+  // Joggers run the beach road.
+  for (let i = 0; i < 6; i++) {
+    const j = makePerson(3080, rrange(rng, 400, 2200), 'jogger', { color: pick(rng, ['#e85a5a', '#5ad9c9', '#f2e85a']) });
+    j.state = 'walk';
+    j.angle = rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
+    j.speed = rrange(rng, 130, 170);
+    people.push(j);
   }
-  // Vendors at their stalls: the pier, the boardwalk and the park gate.
-  const stalls = [
-    { x: 1750, y: 2470 },
-    { x: 2400, y: 2380 },
-    { x: 2100, y: 560 },
-  ];
-  for (const stall of stalls) peds.push(makeVendor(stall.x, stall.y, random));
-  return peds;
+  // Vendors stand at their boardwalk stalls.
+  for (const v of city.vendors) {
+    const person = makePerson(v.x + 8, v.y + 30, 'vendor', { color: '#f2e8c9' });
+    person.state = 'idle';
+    people.push(person);
+  }
+  return people;
 }
 
-// A Syndicate goon: the Bayfront Brawl's muscle. Three hits to drop, fast
-// on foot, and they punch hard up close. They only exist while that
-// mission's fight step is running.
-export function makeGoon(x, y, random) {
-  return {
-    x, y,
-    angle: range(random, 0, Math.PI * 2),
-    speed: 205,
-    name: pick(random, ['Vic', 'Rocco', 'Sal', 'Big Lou', 'Tino', 'Fats']),
-    color: '#3a3f4a',
-    kind: 'goon',
-    dead: false,
-    hp: 3,
-    punchCooldown: 0,
-  };
-}
-
-export function spawnGoons(x, y, count, random) {
+export function makeGoons(city) {
+  const s = city.stadium;
   const goons = [];
-  for (let i = 0; i < count; i += 1) {
-    goons.push(makeGoon(x + range(random, -90, 90), y + range(random, -70, 70), random));
+  const spots = [
+    [s.x + 90, s.y + 80], [s.x + 330, s.y + 80],
+    [s.x + 90, s.y + 180], [s.x + 330, s.y + 180],
+  ];
+  for (const [x, y] of spots) {
+    const g = makePerson(x, y, 'goon', { color: '#3a3a3a' });
+    g.state = 'idle';
+    goons.push(g);
   }
   return goons;
 }
 
-// Goons chase the player and punch when they get close. `onHit` is called
-// with the damage when a punch lands, so the main loop owns the hurt.
-export function updateGoons(goons, dt, player, city, onHit) {
-  for (const goon of goons) {
-    if (goon.dead) continue;
-    if (goon.punchCooldown > 0) goon.punchCooldown -= dt;
-    const d = Math.hypot(player.x - goon.x, player.y - goon.y);
-    goon.angle = Math.atan2(player.y - goon.y, player.x - goon.x);
-    if (d > 36) {
-      goon.x += Math.cos(goon.angle) * goon.speed * dt;
-      goon.y += Math.sin(goon.angle) * goon.speed * dt;
-    } else if (goon.punchCooldown <= 0) {
-      goon.punchCooldown = 1.1;
-      if (onHit) onHit(8);
+export function updatePeople(people, dt, city, player, danger, rng) {
+  // danger: {x, y, radius} of the latest gunfire or wreck, or null.
+  // rng is the game's seeded stream: pedestrian turns must be deterministic
+  // so a staged screenshot scene re-takes identically.
+  const rand = rng || Math.random;
+  for (const p of people) {
+    if (p.state === 'down') continue;
+    p.stateT += dt;
+    if (p.kind === 'vendor') continue; // vendors hold their stalls
+    if (danger && p.kind !== 'cop' && p.kind !== 'goon') {
+      const dx = p.x - danger.x;
+      const dy = p.y - danger.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < danger.radius * danger.radius) {
+        p.state = 'flee';
+        p.panic = 2.5;
+        p.angle = Math.atan2(dy, dx);
+      }
     }
-    resolveBuildings(city, goon, 12);
-    clampWorld(goon, 14);
+    if (p.state === 'flee') {
+      p.panic -= dt;
+      p.speed = 260;
+      if (p.panic <= 0) { p.state = 'walk'; p.speed = 55; }
+    } else if (p.state === 'chase' && p.target) {
+      const a = angleTo(p.x, p.y, p.target.x, p.target.y);
+      p.angle = a;
+      p.speed = p.kind === 'cop' ? 250 : 200;
+      const d = Math.hypot(p.target.x - p.x, p.target.y - p.y);
+      if (d < 30) p.state = 'attack';
+    } else if (p.state === 'attack' && p.target) {
+      p.speed = 0;
+      const d = Math.hypot(p.target.x - p.x, p.target.y - p.y);
+      if (d > 60) p.state = 'chase';
+    } else if (p.state === 'walk') {
+      // Stroll along, turning at intersections now and then.
+      if (rand() < dt * 0.08) {
+        p.angle += (rand() < 0.5 ? -1 : 1) * Math.PI / 2;
+      }
+    }
+    if (p.speed > 0) {
+      p.x += Math.cos(p.angle) * p.speed * dt;
+      p.y += Math.sin(p.angle) * p.speed * dt;
+      p.x = clamp(p.x, 40, WORLD.w - 40);
+      p.y = clamp(p.y, 40, WORLD.h - 40);
+    }
+    // Joggers stay on the beach road.
+    if (p.kind === 'jogger') {
+      p.x = clamp(p.x, 3040, 3120);
+      if (p.y < 380 || p.y > 2350) p.angle = -p.angle;
+    }
   }
 }
 
-export function makeCop(x, y) {
-  return { x, y, angle: 0, speed: 235, kind: 'cop', arrest: 0, dead: false, hp: 2 };
-}
-
-// Pick a new place to stroll to: a point on a sidewalk, usually across the
-// street, so the ped walks to an intersection and crosses there.
-function pickStrollGoal(ped, random) {
-  const onAvenue = chance(random, 0.5);
-  const dir = chance(random, 0.5) ? 1 : -1;
-  if (onAvenue) {
-    const avenue = pick(random, [300, 700, 1100, 1500, 1900, 2300, 2700, 3100]);
-    return { x: avenue + dir * 62, y: Math.min(Math.max(ped.y + range(random, -400, 400), 150), 2100) };
-  }
-  const street = pick(random, [250, 550, 850, 1150, 1450, 1750, 2050]);
-  return { x: Math.min(Math.max(ped.x + range(random, -400, 400), 150), 3450), y: street + dir * 62 };
-}
-
-export function updatePeds(peds, dt, random, city, danger, cars) {
-  for (const ped of peds) {
-    if (ped.dead) continue;
-    if (ped.panic > 0) ped.panic -= dt;
-    // Gunfire nearby sends peds running away from the shots.
-    if (danger && Math.hypot(ped.x - danger.x, ped.y - danger.y) < 260) {
-      ped.panic = 2.5;
-      ped.angle = Math.atan2(ped.y - danger.y, ped.x - danger.x);
+// A foot cop gives chase while the player is wanted and on foot nearby.
+export function copsChase(people, player, stars) {
+  for (const p of people) {
+    if (p.kind !== 'cop' || p.state === 'down') continue;
+    const d = Math.hypot(player.x - p.x, player.y - p.y);
+    if (stars >= 1 && d < 520) {
+      p.state = 'chase';
+      p.target = player;
+    } else if (p.state === 'chase' && d > 700) {
+      p.state = 'walk';
+      p.target = null;
     }
-    // A car barrelling at a ped on the road makes them sprint for the sidewalk.
-    if (cars && ped.panic <= 0) {
-      for (const car of cars) {
-        if (Math.abs(car.speed) < 120) continue;
-        const dx = ped.x - car.x;
-        const dy = ped.y - car.y;
-        const ahead = dx * Math.cos(car.angle) + dy * Math.sin(car.angle);
-        const side = Math.abs(-dx * Math.sin(car.angle) + dy * Math.cos(car.angle));
-        if (ahead > 0 && ahead < 130 && side < 40) {
-          ped.panic = 1.5;
-          ped.angle = Math.atan2(dy, dx);
-          break;
-        }
-      }
-    }
-    let speed = ped.speed;
-    if (ped.role === 'vendor' && ped.panic <= 0) {
-      // A vendor stands at the stall all day (gunfire still scares them
-      // off — the panic path above handles that).
-      continue;
-    }
-    if (ped.role === 'jogger' && ped.panic <= 0) {
-      // Joggers run laps of the beach road, turning at either end.
-      if (!ped.goal) ped.goal = { x: ped.x < 1800 ? 3400 : 200, y: 2330 };
-      ped.angle = Math.atan2(ped.goal.y - ped.y, ped.goal.x - ped.x);
-      if (Math.hypot(ped.goal.x - ped.x, ped.goal.y - ped.y) < 40) {
-        ped.goal = { x: ped.goal.x > 1800 ? 200 : 3400, y: 2330 };
-      }
-      ped.x += Math.cos(ped.angle) * ped.speed * dt;
-      ped.y += Math.sin(ped.angle) * ped.speed * dt;
-      clampWorld(ped, 14);
-      continue;
-    }
-    if (ped.panic > 0) {
-      speed = 165; // sprint
-    } else if (ped.wait > 0) {
-      ped.wait -= dt;
-      continue;
-    } else {
-      // Strolling: head for the goal; when it is across the road, walk to
-      // the nearest intersection first and cross there.
-      if (!ped.goal) ped.goal = pickStrollGoal(ped, random);
-      const gx = ped.goal.x;
-      const gy = ped.goal.y;
-      const acrossRoad = isRoad((ped.x + gx) / 2, (ped.y + gy) / 2) && !isRoad(ped.x, ped.y);
-      if (acrossRoad && !ped.crossing) {
-        const ix = nearestRoadPoint(ped.x, ped.y);
-        // Walk to the intersection, then straight across.
-        ped.angle = Math.atan2(ix.y - ped.y, ix.x - ped.x);
-        if (Math.hypot(ix.x - ped.x, ix.y - ped.y) < 60) ped.crossing = true;
-      } else {
-        ped.angle = Math.atan2(gy - ped.y, gx - ped.x);
-        if (Math.hypot(gx - ped.x, gy - ped.y) < 30) {
-          ped.goal = null;
-          ped.crossing = false;
-          if (chance(random, 0.5)) ped.wait = range(random, 1, 4);
-        }
-      }
-      if (chance(random, dt * 0.06)) {
-        ped.goal = null;
-        ped.wait = range(random, 1, 3);
-      }
-    }
-    ped.x += Math.cos(ped.angle) * speed * dt;
-    ped.y += Math.sin(ped.angle) * speed * dt;
-    resolveBuildings(city, ped, 12);
-    clampWorld(ped, 14);
   }
 }
 
-// A cop on foot runs at the player and, up close, starts an arrest timer.
-export function updateCops(cops, dt, player, city) {
-  let arrested = false;
-  for (const cop of cops) {
-    if (cop.dead) continue;
-    const d = Math.hypot(player.x - cop.x, player.y - cop.y);
-    cop.angle = Math.atan2(player.y - cop.y, player.x - cop.x);
-    if (d > 34) {
-      cop.x += Math.cos(cop.angle) * cop.speed * dt;
-      cop.y += Math.sin(cop.angle) * cop.speed * dt;
-      cop.arrest = 0;
-    } else {
-      cop.arrest += dt;
-      if (cop.arrest > 1.6) arrested = true;
-    }
-    resolveBuildings(city, cop, 12);
-    clampWorld(cop, 14);
+export function spawnCop(city, x, y) {
+  const cop = makePerson(x, y, 'cop', { color: '#2a4a8a' });
+  cop.state = 'chase';
+  return cop;
+}
+
+export function nearestPerson(people, x, y, maxD, kinds = null) {
+  let best = null;
+  let bestD = maxD * maxD;
+  for (const p of people) {
+    if (p.state === 'down') continue;
+    if (kinds && !kinds.includes(p.kind)) continue;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    const d = dx * dx + dy * dy;
+    if (d < bestD) { bestD = d; best = p; }
   }
-  return arrested;
+  return best;
 }

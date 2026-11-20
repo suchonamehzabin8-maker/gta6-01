@@ -1,75 +1,76 @@
-// Seeded randomness, so the same seed always builds the same city and the
-// same screenshot scenes. mulberry32 is a small, fast generator; the helpers
-// below (pick, range, chance, shuffle, weighted pick, clamp) all draw from
-// it, so nothing in the world is ever unrepeatable.
+// Palmera Bay — Sunset Run: small seeded random helpers.
+// The city is generated from one fixed seed, so every run of the game builds
+// the same Palmera Bay. Gameplay randomness takes its own stream.
+
 export function mulberry32(seed) {
-  let state = seed >>> 0;
+  let a = seed >>> 0;
   return function next() {
-    state |= 0;
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-// One item from a list, chosen by the generator.
-export function pick(random, list) {
-  return list[Math.floor(random() * list.length)];
+export function rngFrom(seed) {
+  return mulberry32(seed);
 }
 
-// A float between min (inclusive) and max (exclusive).
-export function range(random, min, max) {
-  return min + random() * (max - min);
+// Integer in [a, b] inclusive.
+export function rint(rng, a, b) {
+  return a + Math.floor(rng() * (b - a + 1));
 }
 
-// An integer between min and max, both inclusive.
-export function rangeInt(random, min, max) {
-  return min + Math.floor(random() * (max - min + 1));
+// Float in [a, b).
+export function rrange(rng, a, b) {
+  return a + rng() * (b - a);
 }
 
-// True with probability p (0 to 1).
-export function chance(random, p) {
-  return random() < p;
+export function pick(rng, list) {
+  return list[Math.floor(rng() * list.length)];
 }
 
-// A shuffled copy of a list, drawn from the same generator.
-export function shuffle(random, list) {
-  const out = [...list];
-  for (let i = out.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(random() * (i + 1));
-    const tmp = out[i];
-    out[i] = out[j];
-    out[j] = tmp;
-  }
-  return out;
+export function chance(rng, p) {
+  return rng() < p;
 }
 
-// A bell-curved random number, mean 0, spread 1 — two uniform draws
-// averaged, which is close enough for gusts and lightning gaps and keeps
-// the extremes rare. Drawn from the same generator, so it stays seeded.
-export function gauss(random) {
-  return (random() + random() + random() - 1.5) * 2;
+// Deterministic 2D hash in [0, 1) — handy for stable visual noise that must
+// not depend on call order (rain streaks, window lights, waves).
+export function hash2(x, y, seed = 0) {
+  let h = (x * 374761393 + y * 668265263 + seed * 974634211) | 0;
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
 }
 
-// N different items from a list, in a shuffled order, without repeats.
-export function pickN(random, list, n) {
-  return shuffle(random, list).slice(0, Math.min(n, list.length));
+export function clamp(v, a, b) {
+  return v < a ? a : v > b ? b : v;
 }
 
-// Pick one entry from [value, weight] pairs, weighted by the second element.
-export function weightedPick(random, entries) {
-  let total = 0;
-  for (const entry of entries) total += entry[1];
-  let roll = random() * total;
-  for (const entry of entries) {
-    roll -= entry[1];
-    if (roll <= 0) return entry[0];
-  }
-  return entries[entries.length - 1][0];
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
 }
 
-// Clamp a value into [min, max]; used by the camera and the lighting code.
-export function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
+export function dist2(ax, ay, bx, by) {
+  const dx = ax - bx;
+  const dy = ay - by;
+  return dx * dx + dy * dy;
+}
+
+export function angleTo(ax, ay, bx, by) {
+  return Math.atan2(by - ay, bx - ax);
+}
+
+// Smallest signed turn from angle a toward angle b.
+export function angleDiff(a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+export function wrapAngle(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
 }

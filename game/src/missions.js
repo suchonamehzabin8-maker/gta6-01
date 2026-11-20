@@ -1,312 +1,292 @@
-// The story: Mara Vega, a getaway driver fresh out of a job gone wrong, owes
-// the Bay Syndicate one last score. Twelve missions, each a chain of
-// objectives, plus two free-roam activities (taxi fares and hidden sunset
-// tokens). Everything here is invented for this game.
-import { PLACES } from './city.js';
+// Palmera Bay — Sunset Run: the story.
+// Twelve missions as Mara Vega, plus taxi fares and the twelve hidden
+// sunset tokens. Each mission is a list of steps; the engine below checks
+// them off as the player plays. Coordinates match the landmarks city.js
+// places, so a mission's target is always somewhere real.
 
-export const STORY = [
+export const MISSIONS = [
   {
-    id: 'wheels',
-    name: 'First Wheels',
-    pay: 250,
-    briefing: 'Mara: "My ride got impounded. Steal a car — any car — and bring it to my garage."',
-    steps: [
-      { type: 'steal', text: 'Steal a car (walk up to one and press E)' },
-      { type: 'reach', place: 'garage', inCar: true, text: 'Drive to Mara\'s Garage' },
-    ],
-    done: 'Mara: "Not bad. The Syndicate wants its money back — and I need a driver."',
+    id: 'first-wheels', name: 'First Wheels', pay: 250, rep: 10,
+    brief: 'Dante needs wheels. Steal any car on the street.',
+    steps: [{ type: 'steal', kind: 'car', label: 'Steal a car (E next to one)' }],
   },
   {
-    id: 'drop',
-    name: 'The Drop',
-    pay: 500,
-    briefing: 'Dante: "A package is waiting at the Old Docks. Take it to the pier. No cops, no questions."',
-    steps: [
-      { type: 'reach', place: 'docks', text: 'Pick up the package at the Old Docks' },
-      { type: 'reach', place: 'pier', time: 75, text: 'Deliver to Palmera Pier — fast' },
-    ],
-    done: 'Dante: "Clean. The Syndicate is watching you, kid. In a good way."',
+    id: 'the-drop', name: 'The Drop', pay: 300, rep: 10,
+    brief: 'Take the package to the end of the pier. No questions.',
+    steps: [{ type: 'reach', x: 3300, y: 1222, r: 90, label: 'Reach the end of the pier' }],
   },
   {
-    id: 'shakedown',
-    name: 'Shakedown',
-    pay: 750,
-    briefing: 'Mara: "Three shops owe the Syndicate. Walk in, collect, walk out. Try not to make a scene."',
+    id: 'shakedown', name: 'Shakedown', pay: 400, rep: 15,
+    brief: 'Two shops owe the Syndicate. Collect from both.',
     steps: [
-      { type: 'collect', places: ['shop1', 'shop2', 'shop3'], text: 'Collect from the shops (0/3)' },
+      { type: 'reach', x: 1560, y: 740, r: 80, label: 'Collect from the downtown shop' },
+      { type: 'reach', x: 2360, y: 1140, r: 80, label: 'Collect from the marina shop' },
     ],
-    done: 'Mara: "Every dollar accounted for. You\'re good at this."',
   },
   {
-    id: 'getaway',
-    name: 'Getaway',
-    pay: 1200,
-    briefing: 'Dante: "The bank job went loud. Lose the cops and get to the safehouse — do NOT get arrested."',
+    id: 'getaway', name: 'Getaway', pay: 450, rep: 15,
+    brief: 'The PD is onto you. Make some heat, then lose it.',
     steps: [
-      { type: 'reach', place: 'bank', addHeat: 60, text: 'Reach Bay Trust Bank' },
-      { type: 'escape', place: 'safehouse', text: 'Escape the police and reach the Safehouse' },
+      { type: 'heat', stars: 1, label: 'Get the cops\' attention (steal or shoot)' },
+      { type: 'loseheat', label: 'Lose the heat — lay low out of sight' },
     ],
-    done: 'Dante: "You drove like the devil himself. The Syndicate owes YOU now."',
   },
   {
-    id: 'race',
-    name: 'Sunset Grand Prix',
-    pay: 1500,
-    briefing: 'Mara: "A street race down the beach road. Beat the pack and the pot is yours."',
-    steps: [
-      { type: 'race', text: 'Race! Hit every checkpoint before the rivals' },
-    ],
-    done: 'Mara: "Champion of Palmera Bay! The whole city saw that."',
+    id: 'grand-prix', name: 'Sunset Grand Prix', pay: 600, rep: 25,
+    brief: 'Nine checkpoints down the beach road. Beat the clock.',
+    steps: [{ type: 'race', points: [[3080, 420], [3080, 700], [3080, 980], [3080, 1240], [3080, 1500], [3080, 1760], [3080, 2020], [3080, 2240], [3120, 2380]], seconds: 80, label: 'Race the beach road' }],
   },
   {
-    id: 'bigone',
-    name: 'The Big One',
-    pay: 3000,
-    briefing: 'Dante: "Last job: the Syndicate\'s armored van is at the airfield. Take it to the docks. This is the big one."',
+    id: 'the-big-one', name: 'The Big One', pay: 500, rep: 20,
+    brief: 'Grab a bike and get the goods to the airfield.',
     steps: [
-      { type: 'reach', place: 'airport', text: 'Reach Palmera Airfield' },
-      { type: 'reach', place: 'docks', time: 90, text: 'Deliver the van to the Old Docks — fast' },
+      { type: 'steal', kind: 'bike', label: 'Steal a motorbike' },
+      { type: 'reach', x: 380, y: 232, r: 110, label: 'Reach the airfield runway' },
     ],
-    done: 'Mara: "We did it. The debt is paid. Palmera Bay is ours now."',
   },
   {
-    id: 'marina',
-    name: 'Marina Heist',
-    pay: 2000,
-    briefing: 'Mara: "The Syndicate stashed three crates on the marina slips — cash, guns, and something that ticks. Grab all three and bring them to the docks before the tide turns."',
+    id: 'marina-heist', name: 'Marina Heist', pay: 700, rep: 25,
+    brief: 'The marina office keeps its cash in a safe. Take it home.',
     steps: [
-      { type: 'reach', place: 'marina', text: 'Reach the Marina District' },
-      { type: 'collect', places: ['marina', 'lighthouse', 'pier'], text: 'Grab the 3 crates (0/3)' },
-      { type: 'reach', place: 'docks', time: 100, text: 'Deliver the crates to the Old Docks — fast' },
+      { type: 'reach', x: 2970, y: 2210, r: 90, label: 'Reach the marina office' },
+      { type: 'reach', x: 760, y: 560, r: 90, label: 'Bring it back to the safehouse' },
     ],
-    done: 'Dante: "Three crates, zero alarms. The marina crew thinks you\'re a ghost."',
   },
   {
-    id: 'showdown',
-    name: 'Sunset Showdown',
-    pay: 5000,
-    briefing: 'Dante: "The Golden Palm Casino. The Syndicate\'s boss is cashing out tonight — walk in, take the ledger, and walk out with every cop in the bay on your tail. Lose them all and meet me at the safehouse."',
+    id: 'showdown', name: 'Sunset Showdown', pay: 800, rep: 30,
+    brief: 'Five stars. The whole PD is coming. Survive, then vanish.',
     steps: [
-      { type: 'reach', place: 'casino', addHeat: 400, text: 'Reach the Golden Palm Casino' },
-      { type: 'escape', place: 'safehouse', text: 'Lose the 5-star heat and reach the Safehouse' },
+      { type: 'survive', seconds: 45, label: 'Survive 5 stars for 45 seconds' },
+      { type: 'loseheat', label: 'Lose the heat' },
     ],
-    done: 'Mara: "Five stars and you still walked away. Palmera Bay is yours — all of it."',
   },
   {
-    id: 'longcon',
-    name: 'The Long Con',
-    pay: 4000,
-    briefing: 'Mara: "One last errand before we vanish: wake the Flamingo Motel, collect from two more shops, and meet me at the lighthouse before the sun comes up. The whole bay in one run — don\'t stop for anyone."',
+    id: 'long-con', name: 'The Long Con', pay: 650, rep: 20,
+    brief: 'Three drops, three deadlines. Don\'t be late.',
     steps: [
-      { type: 'reach', place: 'motel', text: 'Wake the Flamingo Motel' },
-      { type: 'collect', places: ['shop2', 'shop3'], text: 'Collect from the last shops (0/2)' },
-      { type: 'reach', place: 'lighthouse', time: 150, text: 'Reach the Palmera Lighthouse — fast' },
+      { type: 'timed', x: 1140, y: 340, r: 80, seconds: 45, label: 'Drop 1: north avenue' },
+      { type: 'timed', x: 2340, y: 1540, r: 80, seconds: 45, label: 'Drop 2: stadium district' },
+      { type: 'timed', x: 3060, y: 1940, r: 80, seconds: 45, label: 'Drop 3: beach road' },
     ],
-    done: 'Mara: "The Long Con, done in one run. Legends don\'t retire — they disappear."',
   },
   {
-    id: 'storm',
-    name: 'Storm Runner',
-    pay: 2500,
-    hook: 'storm',
-    briefing: 'Dante: "A storm is rolling in off the sea, and the Syndicate\'s money is sitting at the docks in the rain. Get it to the pier, then the marina, before the streets flood. Wet roads, bad grip — drive like it matters."',
+    id: 'storm-runner', name: 'Storm Runner', pay: 700, rep: 25,
+    brief: 'A bay storm is coming in. Drive through it — twice.',
+    storm: true,
     steps: [
-      { type: 'reach', place: 'docks', text: 'Reach the Old Docks in the storm' },
-      { type: 'reach', place: 'pier', time: 90, text: 'Deliver to Palmera Pier — fast' },
-      { type: 'reach', place: 'marina', time: 120, text: 'Finish at the Marina District — fast' },
+      { type: 'timed', x: 1560, y: 1940, r: 90, seconds: 55, label: 'Deliver through the storm' },
+      { type: 'timed', x: 2960, y: 760, r: 90, seconds: 55, label: 'Second drop, same storm' },
     ],
-    done: 'Dante: "Through a bay storm with the money dry. You\'re the storm now, kid."',
   },
   {
-    id: 'brawl',
-    name: 'Bayfront Brawl',
-    pay: 3500,
-    hook: 'brawl',
-    briefing: 'Mara: "The Syndicate\'s rivals took the stadium — four goons holding the pitch, and they want a fight. Take all four down on foot, then walk out to the safehouse. Fists or boomstick, your call."',
-    steps: [
-      { type: 'reach', place: 'stadium', text: 'Reach Bay Stadium' },
-      { type: 'defeat', place: 'stadium', count: 4, text: 'Take down the goons (0/4)' },
-      { type: 'reach', place: 'safehouse', text: 'Walk out to the Safehouse' },
-    ],
-    done: 'Mara: "Four goons, one Mara. The stadium is ours again."',
+    id: 'bayfront-brawl', name: 'Bayfront Brawl', pay: 750, rep: 30,
+    brief: 'Four Syndicate goons are waiting at the stadium. Settle it.',
+    steps: [{ type: 'defeat', count: 4, label: 'Drop all four goons (F to punch)' }],
   },
   {
-    id: 'courier',
-    name: 'Midnight Courier',
-    pay: 3000,
-    briefing: 'Dante: "The last job, and it runs at night: wake the motel, grab a parcel from Sunrise Mart, and get it to the lighthouse before the sun comes up. Three stops, one run, no headlights-off heroics — the PD is out tonight."',
+    id: 'midnight-courier', name: 'Midnight Courier', pay: 900, rep: 35,
+    brief: 'Three night stops against the clock. The city never sleeps.',
+    night: true,
     steps: [
-      { type: 'reach', place: 'motel', time: 60, text: 'Wake the Flamingo Motel — fast' },
-      { type: 'reach', place: 'shop1', time: 75, text: 'Grab the parcel at Sunrise Mart — fast' },
-      { type: 'reach', place: 'lighthouse', time: 120, text: 'Deliver to the Palmera Lighthouse — fast' },
+      { type: 'timed', x: 760, y: 1940, r: 80, seconds: 50, label: 'Stop 1: Old Docks' },
+      { type: 'timed', x: 2360, y: 340, r: 80, seconds: 50, label: 'Stop 2: north avenue' },
+      { type: 'timed', x: 3300, y: 2200, r: 80, seconds: 50, label: 'Stop 3: the marina' },
     ],
-    done: 'Dante: "Midnight Courier, done before dawn. Twelve jobs, zero debts. Palmera Bay is yours."',
   },
 ];
 
-export const RACE_POINTS = [
-  { x: 1900, y: 2330 },
-  { x: 2600, y: 2330 },
-  { x: 3100, y: 2050 },
-  { x: 3100, y: 1150 },
-  { x: 2700, y: 550 },
-  { x: 1900, y: 250 },
-  { x: 1100, y: 550 },
-  { x: 700, y: 1450 },
-  { x: 1100, y: 2330 },
-];
-
-export const TOKENS = [
-  { x: 420, y: 380 }, { x: 980, y: 220 }, { x: 1680, y: 420 }, { x: 2520, y: 320 },
-  { x: 3200, y: 700 }, { x: 560, y: 1020 }, { x: 1250, y: 1980 }, { x: 2050, y: 1680 },
-  { x: 2900, y: 1450 }, { x: 3300, y: 1750 }, { x: 1850, y: 2520 }, { x: 900, y: 2300 },
-];
-
-export function createProgress() {
+export function createStory() {
   return {
-    missionIndex: 0,
-    missionDone: STORY.map(() => false),
-    cash: 0,
-    rep: 0,
-    tokens: 0,
-    fares: 0,
-    racesWon: 0,
-    storyComplete: false,
-    crates: 0,
-    bestWanted: 0,
-  };
-}
-
-export function createMissionState() {
-  return {
-    active: null,
+    index: 0, // next mission to start
+    active: false,
     step: 0,
     timer: 0,
-    collected: 0,
-    checkpoint: 0,
-    defeated: 0, // goons taken down, for 'defeat' steps
-    message: '',
-    messageTimer: 0,
+    raceCp: 0,
+    goonsDown: 0,
+    done: MISSIONS.map(() => false),
+    complete: false,
+    failed: null,
   };
 }
 
-export function startMission(progress, state, index) {
-  state.active = index;
-  state.step = 0;
-  state.timer = 0;
-  state.collected = 0;
-  state.checkpoint = 0;
-  state.defeated = 0;
-  state.message = STORY[index].briefing;
-  state.messageTimer = 6;
-  return STORY[index];
+export function currentMission(story) {
+  if (story.index >= MISSIONS.length) return null;
+  return MISSIONS[story.index];
 }
 
-// The current objective's target point (for the HUD arrow and minimap).
-export function missionTarget(state) {
-  if (state.active === null) return null;
-  const mission = STORY[state.active];
-  const step = mission.steps[state.step];
-  if (!step) return null;
-  if (step.type === 'reach' || step.type === 'escape') return PLACES[step.place];
-  if (step.type === 'collect') return PLACES[step.places[Math.min(state.collected, step.places.length - 1)]];
-  if (step.type === 'defeat') return PLACES[step.place];
-  if (step.type === 'race') return RACE_POINTS[Math.min(state.checkpoint, RACE_POINTS.length - 1)];
-  return null;
+export function startMission(story, G) {
+  const m = currentMission(story);
+  if (!m || story.active) return false;
+  story.active = true;
+  story.step = 0;
+  story.raceCp = 0;
+  story.goonsDown = 0;
+  story.failed = null;
+  const first = m.steps[0];
+  story.timer = first.seconds || 0;
+  if (m.storm) G.stormForced = true;
+  if (m.id === 'showdown') G.wanted.heat = 950;
+  if (m.id === 'bayfront-brawl') {
+    G.goons = G.goons && G.goons.length ? G.goons : null;
+    if (G.spawnGoons) G.spawnGoons();
+  }
+  if (m.id === 'getaway') G.wanted.heat = Math.max(G.wanted.heat, 120);
+  return true;
 }
 
-// The current objective's text, with the running count filled in for
-// collect steps (the step's own text carries the "(0/3)" it starts with).
-export function missionObjectiveText(state) {
-  if (state.active === null) return 'Press N for the next mission — free roam';
-  const mission = STORY[state.active];
-  const step = mission.steps[state.step];
-  if (!step) return mission.name;
-  let text = step.text;
-  if (step.type === 'collect') {
-    text = text.replace(/\(\d+\/\d+\)/, `(${state.collected}/${step.places.length})`);
-  }
-  if (step.type === 'defeat') {
-    text = text.replace(/\(\d+\/\d+\)/, `(${state.defeated}/${step.count})`);
-  }
-  if (step.type === 'race') text = `Race! Checkpoint ${state.checkpoint + 1}/${RACE_POINTS.length}`;
-  return `${mission.name} — ${text}`;
-}
+// Advance the story one tick. Returns an event or null:
+// {type:'step'} | {type:'complete', mission} | {type:'failed', reason}
+export function updateStory(story, G, dt) {
+  if (!story.active) return null;
+  const m = currentMission(story);
+  if (!m) return null;
+  const step = m.steps[story.step];
+  const p = G.player;
+  const dist = (x, y) => Math.hypot(p.x - x, p.y - y);
 
-// Advance the mission state machine. `g` is the live game context.
-// Returns 'complete' | 'failed' | null.
-export function updateMission(state, progress, g, dt) {
-  if (state.active === null) return null;
-  const mission = STORY[state.active];
-  const step = mission.steps[state.step];
-  if (!step) return 'complete';
-  if (state.messageTimer > 0) state.messageTimer -= dt;
-  if (step.time) {
-    state.timer += dt;
-    if (state.timer > step.time) {
-      state.active = null;
-      return 'failed';
+  if (step.type === 'timed') {
+    story.timer -= dt;
+    if (story.timer <= 0) {
+      story.active = false;
+      story.failed = 'Out of time.';
+      return { type: 'failed', reason: 'Out of time.' };
     }
   }
-  const px = g.player.x;
-  const py = g.player.y;
-  const near = (place, r = 70) => Math.hypot(px - PLACES[place].x, py - PLACES[place].y) < r;
-  const advance = () => {
-    state.step += 1;
-    state.timer = 0;
-    if (state.step >= mission.steps.length) {
-      progress.cash += mission.pay;
-      progress.rep += 10;
-      progress.missionDone[state.active] = true;
-      state.message = `${mission.done}  (+$${mission.pay})`;
-      state.messageTimer = 6;
-      if (state.active === STORY.length - 1) progress.storyComplete = true;
-      state.active = null;
-      return 'complete';
+  if (step.type === 'survive') {
+    story.timer = (story.timer || step.seconds) - dt;
+    if (G.wanted.stars < 5 && story.timer > 0) {
+      // Heat fell early: the showdown is over, move on.
+      story.timer = 0;
     }
-    return null;
-  };
-
-  if (step.type === 'steal') {
-    if (g.playerCar) return advance();
-  } else if (step.type === 'reach') {
-    const inCarOk = !step.inCar || g.playerCar;
-    if (near(step.place) && inCarOk) {
-      if (step.addHeat) g.onCrime && g.onCrime(step.addHeat);
-      return advance();
-    }
-  } else if (step.type === 'collect') {
-    const place = step.places[state.collected];
-    if (place && near(place, 60) && !g.playerCar) {
-      state.collected += 1;
-      progress.cash += 150;
-      if (mission.id === 'marina') progress.crates += 1;
-      state.message = `Collected $150 — ${state.collected}/${step.places.length} stops`;
-      state.messageTimer = 3;
-      if (state.collected >= step.places.length) return advance();
-    }
-  } else if (step.type === 'escape') {
-    if (near(step.place, 80) && g.wanted.stars === 0) return advance();
-  } else if (step.type === 'defeat') {
-    // Count the goons already on the ground; the main loop spawns them
-    // when this step starts and keeps them in g.goons.
-    const goons = g.goons || [];
-    state.defeated = goons.filter((goon) => goon.dead).length;
-    if (state.defeated >= step.count) return advance();
-  } else if (step.type === 'race') {
-    const cp = RACE_POINTS[state.checkpoint];
-    if (cp && Math.hypot(px - cp.x, py - cp.y) < 90) {
-      state.checkpoint += 1;
-      if (state.checkpoint >= RACE_POINTS.length) {
-        progress.racesWon += 1;
-        return advance();
+    if (story.timer <= 0) return advance(story, G, m);
+  }
+  let done = false;
+  switch (step.type) {
+    case 'reach':
+    case 'deliver':
+    case 'timed':
+      done = dist(step.x, step.y) < step.r;
+      break;
+    case 'steal':
+      done = !!p.vehicle && (step.kind === 'any' || p.vehicle.kind === step.kind);
+      break;
+    case 'heat':
+      done = G.wanted.stars >= step.stars;
+      break;
+    case 'loseheat':
+      done = G.wanted.stars === 0;
+      break;
+    case 'race': {
+      const cp = step.points[story.raceCp];
+      if (cp && dist(cp[0], cp[1]) < 90) {
+        story.raceCp++;
+        if (story.raceCp >= step.points.length) done = true;
+        else return { type: 'step', checkpoint: story.raceCp };
       }
+      if (step.seconds) {
+        story.timer -= dt;
+        if (story.timer <= 0) {
+          story.active = false;
+          story.failed = 'Out of time.';
+          return { type: 'failed', reason: 'Out of time.' };
+        }
+      }
+      break;
     }
+    case 'defeat':
+      done = story.goonsDown >= step.count;
+      break;
+    case 'survive':
+      break;
+  }
+  if (done) return advance(story, G, m);
+  return null;
+}
+
+function advance(story, G, m) {
+  story.step++;
+  if (story.step >= m.steps.length) {
+    // Mission complete: pay up.
+    story.done[story.index] = true;
+    story.active = false;
+    G.cash += m.pay;
+    G.rep += m.rep;
+    if (m.storm) G.stormForced = false;
+    const finished = story.done.every(Boolean);
+    if (finished) story.complete = true;
+    else story.index++;
+    return { type: 'complete', mission: m, finished };
+  }
+  const next = m.steps[story.step];
+  story.timer = next.seconds || 0;
+  story.raceCp = 0;
+  return { type: 'step' };
+}
+
+export function missionObjective(story) {
+  if (story.complete) return 'Story complete — Palmera Bay is yours.';
+  const m = currentMission(story);
+  if (!m) return '';
+  if (!story.active) return `Next mission (N): ${m.name} — $${m.pay}`;
+  const step = m.steps[story.step];
+  let label = step.label;
+  if (step.type === 'race') label += ` (${story.raceCp}/${step.points.length})`;
+  if (step.type === 'defeat') label += ` (${story.goonsDown}/${step.count})`;
+  if (step.type === 'timed' || step.type === 'race') label += ` — ${Math.ceil(story.timer)}s`;
+  if (step.type === 'survive') label += ` — ${Math.ceil(story.timer)}s`;
+  return `${m.name}: ${label}`;
+}
+
+// --- Taxi fares ---------------------------------------------------------------
+
+export function createTaxi() {
+  return { fare: null, timer: 0 };
+}
+
+// Offer a fare when the player is driving a taxi. Destination: a random
+// road point; pay scales with distance.
+export function offerFare(taxi, G, rng) {
+  if (taxi.fare) return null;
+  const p = G.player;
+  if (!p.vehicle || !p.vehicle.taxi) return null;
+  const dest = {
+    x: 300 + Math.floor(rng() * 10) * 280,
+    y: 300 + Math.floor(rng() * 7) * 280,
+  };
+  const d = Math.hypot(dest.x - p.x, dest.y - p.y);
+  taxi.fare = { x: dest.x, y: dest.y, pay: 60 + Math.round(d / 12), timer: 60 + d / 40 };
+  return taxi.fare;
+}
+
+export function updateTaxi(taxi, G, dt) {
+  if (!taxi.fare) return null;
+  taxi.timer -= dt;
+  const p = G.player;
+  if (Math.hypot(p.x - taxi.fare.x, p.y - taxi.fare.y) < 90) {
+    const pay = taxi.fare.pay;
+    G.cash += pay;
+    taxi.fare = null;
+    return { type: 'fare', pay };
+  }
+  if (taxi.timer <= 0) {
+    taxi.fare = null;
+    return { type: 'fare-lost' };
   }
   return null;
 }
 
-// Taxi: a fare is a pedestrian who wants a ride to a random place.
-export function createTaxi() {
-  return { passenger: null, dest: null, fare: 0, timer: 0 };
+// --- Sunset tokens -------------------------------------------------------------
+
+export function tokenNear(city, x, y, maxD = 30) {
+  for (const t of city.tokens) {
+    if (t.taken) continue;
+    const dx = t.x - x;
+    const dy = t.y - y;
+    if (dx * dx + dy * dy < maxD * maxD) return t;
+  }
+  return null;
+}
+
+export function tokensLeft(city) {
+  return city.tokens.filter((t) => !t.taken).length;
 }

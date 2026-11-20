@@ -1,163 +1,179 @@
-// Combat on foot: aim with the mouse, shoot with a click, punch up close.
-// Three weapons — the pistol Mara starts with, the spray gun (SMG) picked
-// up around the bay, and the boomstick (shotgun) at the stadium and the
-// boardwalk — plus bullets, pickups (health, ammo, cash, weapons) and the
-// crime callback that feeds the wanted system. Weapon pickups sit at
-// fixed spots so a player who explores finds the better guns. Bullets hurt
-// cars too: a car shot enough becomes a smoking wreck.
-import { PLAYER, WEAPONS } from './config.js';
-import { hitBuilding } from './city.js';
-import { damageCar } from './vehicles.js';
+// Palmera Bay — Sunset Run: combat.
+// Three weapons — pistol, spray gun, boomstick — plus fists, and the
+// pickups scattered around the bay: health, ammo and cash.
+
+import { WEAPONS, PLAYER } from './config.js';
+import { clamp } from './random.js';
+import { collideBuildings } from './city.js';
 
 export function createCombat() {
   return {
     bullets: [],
-    ammo: 24,
-    maxAmmo: 180,
-    fireTimer: 0,
-    muzzle: 0,
     weapon: 'pistol',
-    owned: { pistol: true, smg: false, shotgun: false },
-    pickups: [], // {x, y, kind: 'health'|'ammo'|'cash'|'weapon', value, bob}
+    owned: { pistol: true, smg: false, boomstick: false },
+    ammo: { pistol: Infinity, smg: 0, boomstick: 0 },
+    cooldown: 0,
+    punchT: 0,
+    particles: [],
   };
 }
 
 export function currentWeapon(combat) {
-  return WEAPONS[combat.weapon] || WEAPONS.pistol;
+  return WEAPONS[combat.weapon];
 }
 
 export function switchWeapon(combat, name) {
-  if (combat.owned[name]) {
-    combat.weapon = name;
-    return true;
-  }
-  return false;
+  if (combat.owned[name]) combat.weapon = name;
 }
 
-export function shoot(combat, x, y, angle, onCrime) {
-  const weapon = currentWeapon(combat);
-  if (combat.fireTimer > 0 || combat.ammo <= 0) return false;
-  combat.fireTimer = weapon.fireRate;
-  combat.ammo -= 1;
-  combat.muzzle = 0.08;
-  // The boomstick fires a spread of pellets from one shell; every other
-  // gun fires a single bullet. Pellets fly a shorter distance, so the
-  // shotgun is a close-range room-clearer, not a sniper.
-  const pellets = weapon.pellets || 1;
-  for (let i = 0; i < pellets; i += 1) {
-    const spread = (Math.random() - 0.5) * 2 * weapon.spread;
+export function cycleWeapon(combat, dir) {
+  const order = ['pistol', 'smg', 'boomstick'].filter((w) => combat.owned[w]);
+  if (order.length < 2) return;
+  const i = order.indexOf(combat.weapon);
+  combat.weapon = order[(i + dir + order.length) % order.length];
+}
+
+export function giveWeapon(combat, name, ammo) {
+  combat.owned[name] = true;
+  combat.ammo[name] = (combat.ammo[name] || 0) + ammo;
+  combat.weapon = name;
+}
+
+// Fire from (x, y) along angle. Returns true if a shot went out.
+export function shoot(combat, x, y, angle) {
+  if (combat.cooldown > 0) return false;
+  const def = WEAPONS[combat.weapon];
+  if (combat.ammo[combat.weapon] !== Infinity) {
+    if (combat.ammo[combat.weapon] <= 0) return false;
+    combat.ammo[combat.weapon]--;
+  }
+  combat.cooldown = def.rate;
+  for (let i = 0; i < def.pellets; i++) {
+    const spread = (Math.random() - 0.5) * 2 * def.spread;
     combat.bullets.push({
-      x, y,
-      angle: angle + spread,
-      speed: weapon.bulletSpeed,
-      life: pellets > 1 ? 0.45 : 0.9,
-      fromPlayer: true,
-      damage: weapon.damage,
-      weapon: combat.weapon,
+      x: x + Math.cos(angle) * 24,
+      y: y + Math.sin(angle) * 24,
+      vx: Math.cos(angle + spread) * def.speed,
+      vy: Math.sin(angle + spread) * def.speed,
+      life: def.range / def.speed,
+      damage: def.damage,
+      kind: combat.weapon,
     });
   }
-  if (onCrime) onCrime(8);
-  return weapon;
+  return true;
 }
 
-export function punch(combat, player, peds, cops, onCrime) {
-  // Hits the nearest person inside the punch arc.
-  let best = null;
-  let bestD = PLAYER.punchRange;
-  const consider = (p) => {
-    if (p.dead) return;
-    const d = Math.hypot(p.x - player.x, p.y - player.y);
-    if (d > bestD) return;
-    const a = Math.atan2(p.y - player.y, p.x - player.x);
-    let diff = Math.abs(a - player.angle);
-    if (diff > Math.PI) diff = Math.PI * 2 - diff;
-    if (diff < PLAYER.punchArc) {
-      best = p;
-      bestD = d;
+// Move bullets; returns hit events {type:'hit-vehicle'|'hit-person'|'hit-wall', ...}.
+export function updateBullets(combat, dt, city, vehicles, people) {
+  const events = [];
+  combat.cooldown = Math.max(0, combat.cooldown - dt);
+  combat.punchT = Math.max(0, combat.punchT - dt);
+  for (let i = combat.bullets.length - 1; i >= 0; i--) {
+    const b = combat.bullets[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    let dead = false;
+    // Buildings stop bullets.
+    const probe = { x: b.x, y: b.y };
+    if (collideBuildings(city, probe, 2)) {
+      events.push({ type: 'hit-wall', x: b.x, y: b.y });
+      dead = true;
     }
-  };
-  peds.forEach(consider);
-  cops.forEach(consider);
-  if (best) {
-    if (best.kind === 'goon') {
-      // Goons are tougher than a bystander: three punches to drop one,
-      // and no heat for fighting Syndicate muscle in the brawl.
-      best.hp = (best.hp ?? 3) - 1;
-      if (best.hp <= 0) best.dead = true;
-    } else {
-      best.dead = true;
-      if (onCrime) onCrime(best.kind === 'cop' ? 80 : 35);
+    if (!dead) {
+      for (const v of vehicles) {
+        if (v.wreck) continue;
+        const dx = b.x - v.x;
+        const dy = b.y - v.y;
+        if (dx * dx + dy * dy < 30 * 30) {
+          events.push({ type: 'hit-vehicle', vehicle: v, damage: b.damage, x: b.x, y: b.y });
+          dead = true;
+          break;
+        }
+      }
     }
-    return best;
+    if (!dead) {
+      for (const p of people) {
+        if (p.state === 'down') continue;
+        const dx = b.x - p.x;
+        const dy = b.y - p.y;
+        if (dx * dx + dy * dy < 18 * 18) {
+          events.push({ type: 'hit-person', person: p, damage: b.damage, x: b.x, y: b.y });
+          dead = true;
+          break;
+        }
+      }
+    }
+    b.life -= dt;
+    if (b.life <= 0) dead = true;
+    if (dead) combat.bullets.splice(i, 1);
+  }
+  // Particles (muzzle flashes, impacts) age out on their own.
+  for (let i = combat.particles.length - 1; i >= 0; i--) {
+    const pt = combat.particles[i];
+    pt.life -= dt;
+    pt.x += pt.vx * dt;
+    pt.y += pt.vy * dt;
+    if (pt.life <= 0) combat.particles.splice(i, 1);
+  }
+  return events;
+}
+
+export function spawnBurst(combat, x, y, color, n = 8) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = 60 + Math.random() * 160;
+    combat.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.3 + Math.random() * 0.3, color });
+  }
+}
+
+// A punch: anything in the arc in front of the player takes damage.
+export function punch(combat, x, y, angle, people, vehicles) {
+  if (combat.punchT > 0) return [];
+  combat.punchT = PLAYER.punchCooldown;
+  const hits = [];
+  const range = PLAYER.punchRange;
+  for (const p of people) {
+    if (p.state === 'down') continue;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    const d = Math.hypot(dx, dy);
+    if (d > range) continue;
+    const a = Math.atan2(dy, dx);
+    let diff = a - angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    if (Math.abs(diff) < PLAYER.punchArc) hits.push({ type: 'person', target: p });
+  }
+  for (const v of vehicles) {
+    if (v.wreck) continue;
+    const dx = v.x - x;
+    const dy = v.y - y;
+    if (Math.hypot(dx, dy) < range + 10) hits.push({ type: 'vehicle', target: v });
+  }
+  return hits;
+}
+
+// --- Pickups ----------------------------------------------------------------
+
+export function spawnPickups(city) {
+  return [
+    { kind: 'health', x: 800, y: 700, taken: false },
+    { kind: 'health', x: 2100, y: 1200, taken: false },
+    { kind: 'health', x: 3100, y: 1300, taken: false },
+    { kind: 'ammo', x: 400, y: 2050, taken: false },
+    { kind: 'ammo', x: 2900, y: 2150, taken: false },
+    { kind: 'cash', x: 1200, y: 800, taken: false },
+    { kind: 'cash', x: 2400, y: 800, taken: false },
+    { kind: 'cash', x: 1600, y: 2200, taken: false },
+  ];
+}
+
+export function pickupNear(pickups, x, y, maxD = 30) {
+  for (const p of pickups) {
+    if (p.taken) continue;
+    const dx = p.x - x;
+    const dy = p.y - y;
+    if (dx * dx + dy * dy < maxD * maxD) return p;
   }
   return null;
-}
-
-export function updateBullets(combat, dt, city, peds, cops, cars, player, onHit, onWreck) {
-  for (const b of combat.bullets) {
-    b.x += Math.cos(b.angle) * b.speed * dt;
-    b.y += Math.sin(b.angle) * b.speed * dt;
-    b.life -= dt;
-    if (hitBuilding(city, b.x, b.y, 2)) {
-      b.life = 0;
-      continue;
-    }
-    if (b.fromPlayer) {
-      for (const p of [...peds, ...cops]) {
-        if (p.dead) continue;
-        if (Math.hypot(p.x - b.x, p.y - b.y) < 15) {
-          // Cops take two pistol hits; peds go down in one.
-          p.hp = (p.hp ?? 1) - 1;
-          if (p.hp <= 0) {
-            p.dead = true;
-            if (onHit) onHit(p);
-          }
-          b.life = 0;
-          break;
-        }
-      }
-      if (b.life <= 0) continue;
-      for (const c of cars) {
-        if (c.driver === 'player') continue;
-        if (Math.hypot(c.x - b.x, c.y - b.y) < 26) {
-          if (damageCar(c, b.damage) && onWreck) onWreck(c);
-          b.life = 0;
-          break;
-        }
-      }
-    }
-  }
-  combat.bullets = combat.bullets.filter((b) => b.life > 0);
-  if (combat.fireTimer > 0) combat.fireTimer -= dt;
-  if (combat.muzzle > 0) combat.muzzle -= dt;
-}
-
-export function updatePickups(combat, dt, player, onPickup) {
-  for (const p of combat.pickups) p.bob = (p.bob || 0) + dt;
-  const kept = [];
-  for (const p of combat.pickups) {
-    if (Math.hypot(p.x - player.x, p.y - player.y) < 30) {
-      if (onPickup) onPickup(p);
-    } else {
-      kept.push(p);
-    }
-  }
-  combat.pickups = kept;
-}
-
-export function dropPickup(combat, x, y, kind, value) {
-  combat.pickups.push({ x, y, kind, value, bob: 0 });
-}
-
-// A weapon pickup: grants the SMG (and a clip of ammo) the first time,
-// ammo after that.
-export function dropWeaponPickup(combat, x, y) {
-  combat.pickups.push({ x, y, kind: 'weapon', value: 'smg', bob: 0 });
-}
-
-// A boomstick pickup: grants the shotgun (and shells) the first time,
-// shells after that. The value names the weapon, so the pickup handler
-// knows which gun to hand over.
-export function dropShotgunPickup(combat, x, y) {
-  combat.pickups.push({ x, y, kind: 'weapon', value: 'shotgun', bob: 0 });
 }

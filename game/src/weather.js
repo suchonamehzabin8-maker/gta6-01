@@ -1,133 +1,109 @@
-// Bay weather: storms roll in off the sea on their own schedule, and the
-// whole game feels them. Rain slicks the roads — cars grip worse and
-// traffic slows — lightning flashes the sky, and thunder follows a beat
-// later. Everything is driven by the game's seeded generator, so the same
-// seed always gives the same sky, and the same screenshot scenes always
-// show the same weather. A mission can force a storm (Storm Runner), and
-// the chase screenshot stages one on purpose.
-import { WEATHER } from './config.js';
-import { mulberry32, range, gauss } from './random.js';
+// Palmera Bay — Sunset Run: bay weather.
+// Storms roll in on their own schedule — gathering clouds, a downpour with
+// rain streaks, lightning and delayed thunder, then clearing. Wet roads cut
+// grip and slow the traffic. A mission can force a storm.
 
-// Phases: clear sky, clouds gathering, the downpour, then clearing.
-export function createWeather(seed) {
+export function createWeather() {
   return {
-    phase: 'clear',
-    // The first storm is a while off, so the game opens in golden light.
-    timer: range(mulberry32(seed + 77), WEATHER.clearMin, WEATHER.clearMax),
-    intensity: 0, // 0 is dry, 1 is a full bay storm
-    streaks: [],
-    streakSeed: mulberry32(seed + 913),
-    flash: 0, // lightning flash, 1 just after a strike, fading fast
-    flashTimer: 8,
-    thunderIn: -1, // seconds until the thunderclap, -1 when none is coming
-    wet: 0, // how soaked the roads are: rises in rain, dries slowly after
-    gust: 0, // wind slant on the rain, -1 (west) to 1 (east)
+    phase: 'clear', // clear | clouds | storm | clearing
+    t: 0, // seconds in this phase
+    intensity: 0, // 0..1, how hard it is raining right now
+    lightning: 0, // flash timer, >0 while the sky is lit
+    thunderIn: -1, // seconds until the thunder sound, -1 = none queued
+    forced: false, // a mission is holding the storm
+    nextChange: 45,
+    seed: 7,
   };
 }
 
-// Force a storm right now, for the Storm Runner mission and the chase
-// screenshot: clouds gather for a few seconds, then the downpour.
-export function forceStorm(weather) {
-  if (weather.phase === 'storm') return;
-  weather.phase = 'gathering';
-  weather.timer = 5;
-}
+const PHASE_LEN = { clear: 55, clouds: 18, storm: 40, clearing: 16 };
 
-// How much grip the rain takes off the roads right now, 0 (dry) to 1.
-export function weatherGripLoss(weather) {
-  return weather.intensity * WEATHER.gripLoss;
-}
-
-// How much traffic slows in the rain, as a speed multiplier.
-export function weatherTrafficFactor(weather) {
-  return 1 - weather.intensity * (1 - WEATHER.trafficSlow);
-}
-
-// Advance the sky by one step. `random` is the game's seeded generator.
-export function updateWeather(weather, dt, random) {
-  weather.timer -= dt;
-  if (weather.flash > 0) weather.flash = Math.max(0, weather.flash - dt * 2.2);
-  if (weather.thunderIn > 0) {
-    weather.thunderIn -= dt;
-    if (weather.thunderIn <= 0) {
-      weather.thunderPending = true;
-      weather.thunderIn = -1;
+export function updateWeather(w, dt, rng) {
+  w.t += dt;
+  w.seed += dt;
+  if (w.lightning > 0) w.lightning -= dt;
+  if (w.thunderIn > 0) {
+    w.thunderIn -= dt;
+    if (w.thunderIn <= 0) {
+      w.thunderIn = -1;
+      w.thunderDue = true;
     }
   }
-
-  if (weather.phase === 'clear') {
-    weather.intensity = Math.max(0, weather.intensity - dt * 0.05);
-    // The roads dry slowly after a storm.
-    weather.wet = Math.max(0, weather.wet - dt * 0.01);
-    if (weather.timer <= 0) {
-      weather.phase = 'gathering';
-      weather.timer = WEATHER.gatherSeconds;
-      weather.gust = range(random, -1, 1);
+  if (w.forced) {
+    if (w.phase !== 'storm') {
+      w.phase = 'storm';
+      w.t = 0;
     }
-  } else if (weather.phase === 'gathering') {
-    // Clouds thicken and the first drops fall.
-    weather.intensity = Math.min(0.35, weather.intensity + dt * 0.06);
-    if (weather.timer <= 0) {
-      weather.phase = 'storm';
-      weather.timer = range(random, WEATHER.stormMin, WEATHER.stormMax);
-      weather.flashTimer = range(random, 2, 6);
-    }
-  } else if (weather.phase === 'storm') {
-    weather.intensity = Math.min(WEATHER.maxIntensity, weather.intensity + dt * 0.15);
-    weather.wet = Math.min(1, weather.wet + dt * 0.08);
-    weather.flashTimer -= dt;
-    if (weather.flashTimer <= 0) {
-      // Lightning: the flash now, the thunder a little later, the way a
-      // real storm staggers them. The gap grows with the storm's mood.
-      weather.flash = 1;
-      weather.thunderIn = 0.6 + Math.abs(gauss(random)) * 1.6;
-      weather.flashTimer = range(random, WEATHER.lightningEveryMin, WEATHER.lightningEveryMax);
-    }
-    if (weather.timer <= 0) {
-      weather.phase = 'clearing';
-      weather.timer = WEATHER.clearingSeconds;
-    }
-  } else {
-    // The rain eases off; the roads stay wet a while longer.
-    weather.intensity = Math.max(0, weather.intensity - dt * 0.12);
-    weather.wet = Math.max(0, weather.wet - dt * 0.015);
-    if (weather.timer <= 0) {
-      weather.phase = 'clear';
-      weather.timer = range(random, WEATHER.clearMin, WEATHER.clearMax);
+    w.intensity = Math.min(1, w.intensity + dt * 0.25);
+    maybeBolt(w, rng);
+    return;
+  }
+  const target = w.phase === 'storm' ? 1 : w.phase === 'clouds' ? 0.35 : 0;
+  w.intensity += (target - w.intensity) * Math.min(1, dt * 0.2);
+  if (w.phase === 'storm') maybeBolt(w, rng);
+  if (w.t >= w.nextChange) {
+    w.t = 0;
+    if (w.phase === 'clear') {
+      w.phase = 'clouds';
+      w.nextChange = PHASE_LEN.clouds;
+    } else if (w.phase === 'clouds') {
+      w.phase = 'storm';
+      w.nextChange = PHASE_LEN.storm;
+    } else if (w.phase === 'storm') {
+      w.phase = 'clearing';
+      w.nextChange = PHASE_LEN.clearing;
+    } else {
+      w.phase = 'clear';
+      w.nextChange = PHASE_LEN.clear * (0.7 + rng() * 0.8);
     }
   }
+}
 
-  // Keep the streak pool full while it rains, and let it thin out as the
-  // sky clears. Streaks live in viewport space (1280x720) and fall with a
-  // wind slant.
-  const want = Math.round(weather.intensity * WEATHER.streaks);
-  const gen = weather.streakSeed;
-  while (weather.streaks.length < want) {
-    weather.streaks.push({
-      x: gen() * 1280,
-      y: gen() * 720 - 40,
-      len: 14 + gen() * 22,
-      speed: WEATHER.streakSpeed * (0.8 + gen() * 0.5),
+function maybeBolt(w, rng) {
+  if (w.intensity > 0.5 && rng() < 0.012) {
+    w.lightning = 0.28;
+    w.thunderIn = 0.6 + rng() * 2.2;
+  }
+}
+
+// Grip multiplier for wet roads: 1 when dry, down to 0.72 in a full storm.
+export function gripOf(w) {
+  return 1 - 0.28 * w.intensity;
+}
+
+export function isRaining(w) {
+  return w.intensity > 0.15;
+}
+
+export function skyName(w) {
+  if (w.phase === 'storm') return 'BAY STORM';
+  if (w.phase === 'clouds') return 'CLOUDS';
+  if (w.phase === 'clearing') return 'CLEARING';
+  return 'CLEAR';
+}
+
+export function forceStorm(w, on) {
+  w.forced = on;
+  if (!on && w.phase === 'storm') {
+    w.phase = 'clearing';
+    w.t = 0;
+    w.nextChange = PHASE_LEN.clearing;
+  }
+}
+
+// Rain streaks for the renderer: deterministic from the frame counter, so a
+// screenshot scene draws the same rain every time it is staged.
+export function rainStreaks(frame, count, width, height, intensity) {
+  const out = [];
+  const n = Math.floor(count * intensity);
+  for (let i = 0; i < n; i++) {
+    const h1 = (i * 2654435761 + frame * 97) >>> 0;
+    const h2 = (i * 40503 + frame * 13) >>> 0;
+    out.push({
+      x: (h1 % 10000) / 10000 * width,
+      y: (h2 % 10000) / 10000 * height,
+      len: 14 + (h1 % 12),
     });
   }
-  if (weather.streaks.length > want) weather.streaks.length = want;
-  const slant = weather.gust * 0.35;
-  for (const s of weather.streaks) {
-    s.y += s.speed * dt;
-    s.x += s.speed * slant * dt;
-    if (s.y > 720) {
-      s.y = -40;
-      s.x = gen() * 1280;
-    }
-    if (s.x > 1280) s.x = 0;
-    if (s.x < 0) s.x = 1280;
-  }
-}
-
-// A short word for the HUD: what the sky is doing right now.
-export function weatherWord(weather) {
-  if (weather.phase === 'storm') return weather.intensity > 0.8 ? 'BAY STORM' : 'RAIN';
-  if (weather.phase === 'gathering') return 'CLOUDS GATHERING';
-  if (weather.phase === 'clearing') return 'RAIN EASING';
-  return 'CLEAR';
+  return out;
 }

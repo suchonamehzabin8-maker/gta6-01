@@ -1,127 +1,122 @@
-// Fixed scenes for screenshots: ?shot=chase|play|race|title. Each one stages
-// the real game — the same world, rules and HUD a player sees — then plays it
-// forward a few seconds with a simple autopilot, so the frame is what real
-// play looks like and the same seed always gives the same frame. The chase
-// scene stages a bay storm too, so the rain and the wet roads show.
-import { STEP } from './config.js';
-import { SCREEN_TITLE, SCREEN_PLAY } from './render.js';
-import { PLACES } from './city.js';
-import { makeCar } from './vehicles.js';
-import { addHeat, clearWanted } from './wanted.js';
-import { startMission } from './missions.js';
-import { forceStorm } from './weather.js';
+// Palmera Bay — Sunset Run: deterministic screenshot scenes.
+// ?shot=chase|play|race|title stages one fixed moment of the game, so the
+// screenshots show the city at its best and re-take identically. The scene
+// sets positions, heat, weather and the clock directly — no gameplay runs
+// while staging, so nothing random can move between two takes.
 
-// Drive toward a point: steer, throttle, brake when close. The input shape
-// matches the real keyboard input (pressed/keys included) so the game loop
-// never trips on a missing field while a shot is staging.
-function makeShotInput() {
-  return {
-    up: false, down: false, left: false, right: false, handbrake: false,
-    firing: false, mouseX: 640, mouseY: 360, mouseClicked: false,
-    pressed: {}, keys: {},
-  };
+import { WORLD } from './config.js';
+import { makeCar, makeBike } from './vehicles.js';
+import { makePerson } from './people.js';
+import { currentMission } from './missions.js';
+
+export function shotList() {
+  return [
+    { name: '1-chase.jpg', query: '?shot=chase&seed=1' },
+    { name: '2-pier.jpg', query: '?shot=play&seed=1' },
+    { name: '3-race.jpg', query: '?shot=race&seed=1' },
+    { name: '4-title.jpg', query: '?shot=title&seed=1' },
+  ];
 }
 
-function autopilotDrive(game, target) {
-  const car = game.playerCar;
-  if (!car) return;
-  const want = Math.atan2(target.y - car.y, target.x - car.x);
-  let diff = want - car.angle;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  game.shotInput = makeShotInput();
-  game.shotInput.up = Math.abs(diff) < 1.2;
-  game.shotInput.left = diff < -0.08;
-  game.shotInput.right = diff > 0.08;
+function placePlayerInCar(G, x, y, angle, speed, color) {
+  const car = makeCar(x, y, angle, { driver: 'player', color });
+  car.speed = speed;
+  G.vehicles.push(car);
+  G.player.vehicle = car;
+  G.player.x = x;
+  G.player.y = y;
+  G.player.angle = angle;
+  G.camera.x = x;
+  G.camera.y = y;
+  return car;
 }
 
-export function stageShot(name, game) {
-  game.screen = SCREEN_PLAY;
-  game.resetWorld();
-  const g = game;
-  // Staged shots should show the scene, not a random taxi fare: keep the
-  // taxi timer far in the future while the scene plays out.
-  g.taxi.timer = 9999;
-  if (name === 'title') {
-    game.screen = SCREEN_TITLE;
-    return;
+function setWanted(G, stars) {
+  const heatFor = [0, 60, 260, 460, 660, 920];
+  G.wanted.heat = heatFor[stars];
+  G.wanted.stars = stars;
+}
+
+function addCruiser(G, x, y, angle) {
+  const c = makeCar(x, y, angle, { driver: 'police', color: '#222831', model: 'cruiser' });
+  c.police = true;
+  c.speed = 380;
+  G.wanted.cruisers.push(c);
+  G.vehicles.push(c);
+  return c;
+}
+
+export function setupShot(G, name) {
+  // Freeze the clock in golden hour for every scene except the race's dusk.
+  G.clock = 17.6;
+  G.mode = 'play';
+  if (name === 'chase') {
+    // A 4-star getaway downtown in a bay storm: cruisers, a roadblock,
+    // spike strips and the helicopter overhead.
+    G.weather.phase = 'storm';
+    G.weather.intensity = 0.95;
+    G.weather.nextChange = 9999;
+    placePlayerInCar(G, 1900, 1100, 0, 540, '#d94f3d');
+    G.speedMph = 97; // staged speed: the HUD reads this in shot mode
+    setWanted(G, 4);
+    addCruiser(G, 1650, 1100, 0);
+    addCruiser(G, 2150, 1050, Math.PI);
+    addCruiser(G, 1900, 850, Math.PI / 2);
+    G.wanted.heli = { x: 1900, y: 900, angle: 0.6, light: 0.4 };
+    G.wanted.roadblocks = [{ kind: 'roadblock', x: 2300, y: 1100, angle: Math.PI / 2, w: 90, h: 26 }];
+    G.wanted.strips = [{ kind: 'spike', x: 2150, y: 1100, angle: Math.PI / 2, w: 80, h: 14, used: false }];
+    G.story.index = 3;
+    G.story.active = true;
+    G.story.step = 1;
+    G.cash = 1840;
+    G.rep = 42;
+  } else if (name === 'play') {
+    // On foot on the boardwalk with the package, a bike waiting, the Bay
+    // Wheel behind — close enough to see the pier, far enough from the
+    // target that the mission does not complete while staging.
+    G.player.x = 3180;
+    G.player.y = 1150;
+    G.player.angle = 0;
+    G.camera.x = 3180;
+    G.camera.y = 1150;
+    const bike = makeBike(3200, 1300, 0, { driver: 'parked' });
+    G.vehicles.push(bike);
+    G.story.index = 1;
+    G.story.active = true;
+    G.story.step = 0;
+    G.cash = 560;
+    G.rep = 18;
+    // A couple of pedestrians for life.
+    G.people.push(makePerson(3180, 1100, 'walker'));
+    G.people.push(makePerson(3300, 1350, 'jogger'));
+  } else if (name === 'race') {
+    // Checkpoint 2 of 9 down the beach road, past the boardwalk and the
+    // Bay Wheel, at 90 MPH.
+    G.clock = 18.4;
+    placePlayerInCar(G, 3080, 760, Math.PI / 2, 500, '#3d7dd9');
+    G.speedMph = 90; // staged speed: the HUD reads this in shot mode
+    G.story.index = 4;
+    G.story.active = true;
+    G.story.step = 0;
+    G.story.raceCp = 2;
+    G.story.timer = 62;
+    G.cash = 920;
+    G.rep = 30;
+    addCruiser(G, 3080, 500, Math.PI / 2);
+    G.people.push(makePerson(3120, 980, 'jogger'));
+  } else {
+    // Title: the game idles behind the menu, twelve missions listed.
+    G.mode = 'title';
+    G.camera.x = 1900;
+    G.camera.y = 1300;
+    G.cash = 120;
+    G.rep = 0;
   }
-  if (name === 'race') {
-    // Sunset Grand Prix: on the beach road, rivals alongside, checkpoint 1 ahead.
-    startMission(g.progress, g.mission, 4);
-    g.player.x = 1500;
-    g.player.y = 2330;
-    g.player.angle = 0;
-    const car = makeCar(1500, 2330, 0, { name: 'Coral GT', color: '#f39c12', speed: 1.15 });
-    car.driver = 'player';
-    g.cars.push(car);
-    g.playerCar = car;
-    for (let i = 0; i < 3; i += 1) {
-      const rival = makeCar(1440 - i * 70, 2330 + (i % 2 ? 30 : -30), 0, { name: 'Rival', color: ['#d64545', '#4a90d9', '#8e44ad'][i], speed: 1.0 });
-      rival.driver = 'rival';
-      rival.raceIndex = 0;
-      g.cars.push(rival);
-    }
-    for (let i = 0; i < 90; i += 1) {
-      autopilotDrive(g, { x: 2600, y: 2330 });
-      g.step(STEP, g.shotInput);
-    }
-    // The frame should show the race, not the wanted heat from a
-    // pedestrian the autopilot bumped on the way.
-    clearWanted(g.wanted);
-    g.message = '';
-    g.messageTimer = 0;
-    return;
-  }
-  if (name === 'play') {
-    // On foot at the pier, mid-mission: package run, peds and traffic around.
-    startMission(g.progress, g.mission, 1);
-    g.player.x = PLACES.pier.x - 60;
-    g.player.y = PLACES.pier.y - 160;
-    g.player.angle = Math.PI / 2;
-    g.camera.x = g.player.x;
-    g.camera.y = g.player.y - 150; // frame more land, less empty sea
-    for (let i = 0; i < 120; i += 1) {
-      g.step(STEP, makeShotInput());
-    }
-    g.camera.y = g.player.y - 150;
-    return;
-  }
-  // Default: 'chase' — the cover. A four-star getaway downtown: police
-  // cruisers on the tail, roadblocks ahead, and the helicopter overhead.
-  // The escape runs straight east along the 1150 street, so the car keeps
-  // its speed instead of clipping building corners on a diagonal.
-  startMission(g.progress, g.mission, 3);
-  g.mission.step = 1; // escape step: reach the safehouse
-  g.player.x = 1500;
-  g.player.y = 1150;
-  g.player.angle = 0;
-  const car = makeCar(1500, 1150, 0, { name: 'Neon Coupe', color: '#8e44ad', speed: 1.2 });
-  car.driver = 'player';
-  g.cars.push(car);
-  g.playerCar = car;
-  addHeat(g.wanted, 330, 0); // four stars: cruisers, roadblocks, helicopter
-  // No spike strips in this scene: the cover shot is a fast getaway, and
-  // a strip ahead would slow the car to a crawl before the frame is taken.
-  g.wanted.spikeTimer = 9999;
-  // A bay storm rolls in over the chase: the rain shows, the roads are wet
-  // and slick, and the helicopter's searchlight cuts through the downpour.
-  // The storm is staged at full strength so the frame shows it, and the
-  // 200 steps below keep it stormy to the end of the scene.
-  forceStorm(g.weather);
-  g.weather.phase = 'storm';
-  g.weather.intensity = 1;
-  g.weather.wet = 1;
-  g.weather.timer = 30;
-  // 200 steps at full speed carries the car to about x=3200 — still
-  // flying east when the frame is taken, never turning back on itself.
-  for (let i = 0; i < 200; i += 1) {
-    autopilotDrive(g, { x: 3400, y: 1150 });
-    g.step(STEP, g.shotInput);
-    if (g.wanted.stars < 4) addHeat(g.wanted, 40, 0);
-  }
-  // The frame should show the chase, not a stray toast from the staging
-  // (a pedestrian bumped on the way, or a spike warning).
-  g.message = '';
-  g.messageTimer = 0;
+  // The objective line and minimap marker for the staged mission.
+  const m = currentMission(G.story);
+  G.objective = m ? `${m.name}: ${m.steps[G.story.step]?.label || ''}` : '';
+  G.missionTarget = null;
+  if (name === 'chase') G.missionTarget = { x: 760, y: 560 };
+  if (name === 'play') G.missionTarget = { x: 3300, y: 1222 };
+  if (name === 'race') G.missionTarget = { x: 3080, y: 980 };
 }

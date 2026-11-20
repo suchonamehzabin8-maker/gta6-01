@@ -1,164 +1,86 @@
-// The HUD minimap: a small live map of Palmera Bay in the top-left corner —
-// roads, beach, landmarks, the player, police cars and foot cops, the
-// helicopter, roadblocks, the mission marker, nearby cars, uncollected
-// tokens, the garages, the stunt ramps and the brawl's goons. A north label
-// and the city name sit underneath.
-import { WORLD, PALETTE } from './config.js';
-import { AVENUES, STREETS, ROAD_W, BEACH_TOP, SEA_TOP, LANDMARKS } from './city.js';
-import { GARAGE_BAYS } from './garage.js';
-import { RAMPS } from './stunts.js';
+// Palmera Bay — Sunset Run: the minimap.
+// A small live map in the corner: roads, water, the player arrow, police,
+// the mission marker, tokens, garages, ramps and goons.
 
-const SIZE = 190;
-const SCALE = SIZE / WORLD.width;
+import { WORLD } from './config.js';
 
-function mapX(x) {
-  return 14 + x * SCALE;
-}
-function mapY(y) {
-  return 14 + y * SCALE;
-}
+export function drawMinimap(ctx, G) {
+  const w = 196;
+  const h = 142;
+  const x0 = G.view.w - w - 14;
+  const y0 = 14;
+  const sx = w / WORLD.w;
+  const sy = h / WORLD.h;
 
-export function drawMinimap(ctx, game) {
-  const { cars, cops, missionTarget: target, wanted } = game;
-  const panelH = SIZE * (WORLD.height / WORLD.width);
   ctx.save();
-  ctx.fillStyle = PALETTE.hudPanel;
-  ctx.fillRect(10, 10, SIZE + 8, panelH + 8);
-  ctx.strokeStyle = 'rgba(245,241,230,0.35)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(10, 10, SIZE + 8, panelH + 8);
-  // Grass base so the map reads as the city, not a black grid.
-  ctx.fillStyle = '#8fae62';
-  ctx.fillRect(mapX(0), mapY(0), SIZE, panelH);
-  // Sea and sand.
-  ctx.fillStyle = '#2a7f8f';
-  ctx.fillRect(mapX(0), mapY(SEA_TOP), SIZE, (WORLD.height - SEA_TOP) * SCALE);
-  ctx.fillStyle = '#e8c98a';
-  ctx.fillRect(mapX(0), mapY(BEACH_TOP), SIZE, (SEA_TOP - BEACH_TOP) * SCALE);
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = '#10151c';
+  ctx.fillRect(x0 - 4, y0 - 4, w + 8, h + 8);
+  ctx.globalAlpha = 1;
+  // Water and sand on the east edge.
+  ctx.fillStyle = '#1f6391';
+  ctx.fillRect(x0 + WORLD.sandX * sx, y0, w - WORLD.sandX * sx, h);
+  ctx.fillStyle = '#e8d39a';
+  ctx.fillRect(x0 + WORLD.sandX * sx - 4, y0, 4, h);
   // Roads.
-  ctx.strokeStyle = 'rgba(245,241,230,0.5)';
-  ctx.lineWidth = Math.max(1, ROAD_W * SCALE);
-  for (const avenue of AVENUES) {
+  ctx.strokeStyle = '#5a6068';
+  ctx.lineWidth = 2;
+  for (const rx of G.city.roadsX) {
     ctx.beginPath();
-    ctx.moveTo(mapX(avenue), mapY(80));
-    ctx.lineTo(mapX(avenue), mapY(BEACH_TOP));
+    ctx.moveTo(x0 + rx * sx, y0);
+    ctx.lineTo(x0 + rx * sx, y0 + h);
     ctx.stroke();
   }
-  for (const street of STREETS) {
+  for (const ry of G.city.roadsY) {
     ctx.beginPath();
-    ctx.moveTo(mapX(120), mapY(street));
-    ctx.lineTo(mapX(3480), mapY(street));
+    ctx.moveTo(x0, y0 + ry * sy);
+    ctx.lineTo(x0 + w, y0 + ry * sy);
     ctx.stroke();
   }
-  // Park.
-  ctx.fillStyle = '#7fae5a';
-  ctx.fillRect(mapX(1950), mapY(550), 300 * SCALE, 300 * SCALE);
-  // Landmarks: gold diamonds for the lighthouse, stadium, marina and casino.
-  ctx.fillStyle = PALETTE.gold;
-  for (const lm of LANDMARKS) {
-    const mx = mapX(lm.x);
-    const my = mapY(lm.y);
+  const dot = (x, y, color, r = 3) => {
+    ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.moveTo(mx, my - 4);
-    ctx.lineTo(mx + 4, my);
-    ctx.lineTo(mx, my + 4);
-    ctx.lineTo(mx - 4, my);
-    ctx.closePath();
+    ctx.arc(x0 + x * sx, y0 + y * sy, r, 0, Math.PI * 2);
     ctx.fill();
-  }
-  // Garages: green squares, so a hurt car can find a repair.
-  ctx.fillStyle = '#58b368';
-  for (const bay of GARAGE_BAYS) {
-    ctx.fillRect(mapX(bay.x) - 3, mapY(bay.y) - 3, 6, 6);
-  }
-  // Stunt ramps: orange triangles on the open road.
-  ctx.fillStyle = '#f39c12';
-  for (const ramp of RAMPS) {
-    const mx = mapX(ramp.x);
-    const my = mapY(ramp.y);
-    ctx.beginPath();
-    ctx.moveTo(mx, my - 4);
-    ctx.lineTo(mx + 4, my + 3);
-    ctx.lineTo(mx - 4, my + 3);
-    ctx.closePath();
-    ctx.fill();
-  }
-  // Goons: red dots while the brawl's fight is running.
-  if (game.goons) {
-    ctx.fillStyle = '#d64545';
-    for (const goon of game.goons) {
-      if (goon.dead) continue;
-      ctx.beginPath();
-      ctx.arc(mapX(goon.x), mapY(goon.y), 2.5, 0, Math.PI * 2);
-      ctx.fill();
+  };
+  // Garages, ramps, tokens.
+  for (const g of G.city.garages) dot(g.x, g.y, '#3ddc5a', 3);
+  for (const r of G.city.ramps) dot(r.x, r.y, '#ff9a3d', 2.5);
+  for (const t of G.city.tokens) if (!t.taken) dot(t.x, t.y, '#ffd94f', 2);
+  // Goons, when the brawl is on.
+  if (G.story.active && G.story.index < 12) {
+    const m = G.story && G.missions[G.story.index];
+    if (m && m.id === 'bayfront-brawl') {
+      for (const g of G.goons) if (g.state !== 'down') dot(g.x, g.y, '#c95aff', 3);
     }
   }
-  // Tokens not yet collected.
-  ctx.fillStyle = PALETTE.gold;
-  for (const t of game.tokens) {
-    if (t.taken) continue;
-    ctx.fillRect(mapX(t.x) - 1, mapY(t.y) - 1, 3, 3);
-  }
-  // Mission marker.
+  // Police.
+  for (const c of G.wanted.cruisers) dot(c.x, c.y, '#ff4d4d', 3);
+  if (G.wanted.heli) dot(G.wanted.heli.x, G.wanted.heli.y, '#ff4d4d', 4);
+  // Mission target.
+  const target = G.missionTarget;
   if (target) {
-    ctx.fillStyle = '#fff';
-    const mx = mapX(target.x);
-    const my = mapY(target.y);
+    ctx.fillStyle = '#ffd94f';
     ctx.beginPath();
-    ctx.moveTo(mx, my - 6);
-    ctx.lineTo(mx + 5, my);
-    ctx.lineTo(mx, my + 6);
-    ctx.lineTo(mx - 5, my);
-    ctx.closePath();
+    ctx.arc(x0 + target.x * sx, y0 + target.y * sy, 5, 0, Math.PI * 2);
     ctx.fill();
-  }
-  // Cars, roadblocks and cops.
-  ctx.fillStyle = 'rgba(230,230,230,0.8)';
-  for (const car of cars) {
-    if (car.driver === 'roadblock') continue;
-    ctx.fillRect(mapX(car.x) - 1, mapY(car.y) - 1, 3, 3);
-  }
-  ctx.fillStyle = '#ff5d5d';
-  for (const car of cars) {
-    if (car.driver !== 'roadblock') continue;
-    ctx.fillRect(mapX(car.x) - 2, mapY(car.y) - 2, 4, 4);
-  }
-  ctx.fillStyle = '#5aa0ff';
-  for (const cop of cops) {
-    if (cop.dead) continue;
-    ctx.beginPath();
-    ctx.arc(mapX(cop.x), mapY(cop.y), 2.5, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  // Police helicopter: a pulsing red ring when it is in the air.
-  if (wanted.heli.active) {
-    const hx = mapX(wanted.heli.x);
-    const hy = mapY(wanted.heli.y);
-    ctx.strokeStyle = '#ff5d5d';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(hx, hy, 5 + Math.sin(game.time * 6) * 1.5, 0, Math.PI * 2);
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 1;
     ctx.stroke();
   }
-  // Player arrow.
-  const px = mapX(game.player.x);
-  const py = mapY(game.player.y);
+  // The player: a white triangle pointing where they face.
+  const px = x0 + G.player.x * sx;
+  const py = y0 + G.player.y * sy;
   ctx.save();
   ctx.translate(px, py);
-  ctx.rotate(game.player.angle);
-  ctx.fillStyle = PALETTE.player;
+  ctx.rotate(G.player.angle);
+  ctx.fillStyle = '#fff';
   ctx.beginPath();
-  ctx.moveTo(7, 0);
-  ctx.lineTo(-5, -5);
-  ctx.lineTo(-5, 5);
+  ctx.moveTo(6, 0);
+  ctx.lineTo(-4, -4);
+  ctx.lineTo(-4, 4);
   ctx.closePath();
   ctx.fill();
   ctx.restore();
-  // North label.
-  ctx.fillStyle = PALETTE.muted;
-  ctx.font = 'bold 10px system-ui, sans-serif';
-  ctx.textAlign = 'left';
-  ctx.fillText('N', 14, 14 + panelH + 30);
-  ctx.fillText('PALMERA BAY', 28, 14 + panelH + 30);
   ctx.restore();
 }

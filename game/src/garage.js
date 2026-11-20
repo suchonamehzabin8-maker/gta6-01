@@ -1,99 +1,60 @@
-// Spray & Go: the bay's garages. Mara's Garage on the west side and the
-// Sunset Spray shop by the park both fix a hurt car — for a price that
-// grows with the damage — and a fresh coat of paint rides along with any
-// repair. A car with popped tyres (spike strips) pulls to one side and
-// crawls until a garage fixes it, so a garage is also the only cure for
-// that. Drive into the bay, press G, and the crew gets to work.
-import { GARAGE } from './config.js';
-import { PLACES } from './city.js';
+// Palmera Bay — Sunset Run: Spray & Go garages.
+// Mara's Garage and Sunset Spray repair and repaint (G in the green ring),
+// priced by damage. A garage is also the only cure for spike-popped tyres.
 
-// The two bays, in world coordinates. `place` names the city place they
-// sit on, so the minimap and the mission arrow can find them.
-export const GARAGE_BAYS = [
-  { place: 'garage', x: PLACES.garage.x, y: PLACES.garage.y, name: "Mara's Garage" },
-  { place: 'spray', x: PLACES.spray.x, y: PLACES.spray.y, name: 'Sunset Spray' },
-];
+import { PRICES } from './config.js';
 
-export function createGarage() {
-  return {
-    paintIndex: 0, // which colour the next repaint uses
-    fixing: 0, // seconds left on the current repair job, 0 when idle
-    fixingCar: null,
-    fixedTotal: 0, // dollars spent on repairs this session
-    repaints: 0, // paint jobs done this session
-  };
-}
-
-// The bay a car is sitting in right now, or null when it is not in one.
-export function bayForCar(garage, car) {
-  if (!car) return null;
-  for (const bay of GARAGE_BAYS) {
-    if (Math.hypot(car.x - bay.x, car.y - bay.y) < GARAGE.bayRadius) return bay;
+export function garageAt(city, x, y) {
+  for (const g of city.garages) {
+    const dx = x - g.x;
+    const dy = y - g.y;
+    if (dx * dx + dy * dy < g.r * g.r) return g;
   }
   return null;
 }
 
-// What a repair would cost for this car: by the damage, with a floor.
-export function repairCost(car) {
-  if (!car) return 0;
-  const missing = Math.max(0, 100 - car.health);
-  return Math.max(GARAGE.repairMin, Math.round(missing * GARAGE.repairPerHealth));
+export function repairCost(vehicle, repaint) {
+  const missing = Math.max(0, 100 - vehicle.health);
+  let cost = Math.ceil(missing * PRICES.repairPerHealth);
+  if (vehicle.tyres < 4) cost += PRICES.tyreFix;
+  if (repaint) cost += PRICES.repaint;
+  return cost;
 }
 
-// The prompt the HUD shows when the player's car is in a bay.
-export function garagePrompt(garage, car) {
-  const bay = bayForCar(garage, car);
-  if (!bay) return '';
-  if (garage.fixing > 0) return 'Crew is on it…';
-  const cost = repairCost(car);
-  const hurt = car.health < 100 || car.spiked;
-  if (!hurt) return `${bay.name} — press G for a fresh coat ($${GARAGE.repaintOnly})`;
-  return `${bay.name} — press G to repair + repaint ($${cost})`;
+export function paintCost() {
+  return PRICES.repaint;
 }
 
-// Start a repair (or a paint-only job) when the player presses G in a bay.
-// Returns a message for the HUD, or '' when nothing happened.
-export function startGarageJob(garage, game) {
-  const car = game.playerCar;
-  const bay = bayForCar(garage, car);
-  if (!bay || garage.fixing > 0) return '';
-  const cost = repairCost(car);
-  const hurt = car.health < 100 || car.spiked;
-  const price = hurt ? cost : GARAGE.repaintOnly;
-  if (game.progress.cash < price) {
-    return `Not enough cash — the job costs $${price}.`;
+const PAINTS = ['#d94f3d', '#3d7dd9', '#e8b93d', '#7ed67e', '#c9c9c9', '#8a5ad9', '#e87ab5', '#3dc9c9', '#222222', '#f2f2f2'];
+
+// Repair + optional repaint. Returns {ok, cost, message}.
+export function applyRepair(state, vehicle, repaint) {
+  const cost = repairCost(vehicle, repaint);
+  if (cost <= 0) return { ok: false, cost: 0, message: 'Already in perfect shape.' };
+  if (state.cash < cost) return { ok: false, cost, message: `Need $${cost} — you have $${state.cash}.` };
+  state.cash -= cost;
+  vehicle.health = 100;
+  vehicle.wreck = false;
+  vehicle.tyres = 4;
+  if (repaint) {
+    let next = vehicle.color;
+    while (next === vehicle.color) {
+      next = PAINTS[Math.floor(Math.random() * PAINTS.length)];
+    }
+    vehicle.color = next;
   }
-  game.progress.cash -= price;
-  garage.fixing = hurt ? 2.2 : 1.2;
-  garage.fixingCar = car;
-  garage.pendingPaint = true;
-  garage.pendingPrice = price;
-  return hurt ? `Repairing… $${price} (fresh paint included)` : `Painting… $${price}`;
+  return { ok: true, cost, message: repaint ? `Repaired and repainted — $${cost}.` : `Repaired — $${cost}.` };
 }
 
-// Advance the repair job; when it finishes, the car is whole again, with
-// a new coat of paint and straight tyres.
-export function updateGarage(garage, dt, game) {
-  if (garage.fixing <= 0) return;
-  garage.fixing -= dt;
-  if (garage.fixing > 0) return;
-  const car = garage.fixingCar;
-  garage.fixingCar = null;
-  if (!car || car.wreck) return;
-  const wasHurt = car.health < 100 || car.spiked;
-  car.health = 100;
-  car.smoke = 0;
-  car.spiked = false;
-  car.spikePull = 0;
-  garage.paintIndex = (garage.paintIndex + 1) % GARAGE.paints.length;
-  car.color = GARAGE.paints[garage.paintIndex];
-  if (wasHurt) {
-    garage.fixedTotal += garage.pendingPrice || 0;
-    game.message = `Fixed and repainted — ${car.name} looks brand new.`;
-  } else {
-    garage.repaints += 1;
-    game.message = `Fresh paint — ${car.name} in ${car.color}.`;
+// Paint only, no repair. Returns {ok, cost, message}.
+export function applyPaint(state, vehicle) {
+  const cost = paintCost();
+  if (state.cash < cost) return { ok: false, cost, message: `Need $${cost} for a repaint.` };
+  state.cash -= cost;
+  let next = vehicle.color;
+  while (next === vehicle.color) {
+    next = PAINTS[Math.floor(Math.random() * PAINTS.length)];
   }
-  game.messageTimer = 3;
-  if (game.saveGame) game.saveGame(game);
+  vehicle.color = next;
+  return { ok: true, cost, message: `Fresh paint — $${cost}.` };
 }
