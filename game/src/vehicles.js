@@ -1,205 +1,184 @@
-// Palmera Bay — Sunset Run: cars, bikes and traffic.
-// Arcade physics for the player's ride, road-following AI for the traffic,
-// damage that turns a smashed car into a wreck nobody can drive.
+// Vehicles — arcade cars and motorbikes, plus the traffic that fills the
+// roads. Physics are deliberately simple (speed, heading, grip, a wall slide)
+// so they stay fun at 60 fps and testable in Node.
+import { clamp, dist, angleDiff, lerp } from './random.js';
+import { CAR, BIKE, ROADS_V, ROADS_H, ROAD_HALF, WORLD } from './config.js';
+import { circleHitsBuilding, isOnRoad, nearestRoadPoint } from './city.js';
+import { wetGrip, trafficFactor } from './weather.js';
 
-import { WORLD, CAR, BIKE, TRAFFIC } from './config.js';
-import { clamp, lerp, angleDiff, wrapAngle, rrange, pick } from './random.js';
-import { collideBuildings, onRoad, nearestRoadPoint } from './city.js';
+const CAR_COLORS = ['#d64545', '#3d8bfd', '#f2c14e', '#7bc47f', '#e07a5f', '#9b7ede', '#e8e8e8', '#2f3542'];
+const BIKE_COLORS = ['#ff5d8f', '#22d3ee', '#facc15', '#a78bfa'];
 
-const CAR_COLORS = ['#d94f3d', '#3d7dd9', '#e8b93d', '#7ed67e', '#c9c9c9', '#8a5ad9', '#e87ab5', '#3dc9c9'];
-const TAXI_COLOR = '#f2c230';
-
-let nextId = 1;
-
-export function makeCar(x, y, angle, opts = {}) {
+export function makeVehicle(kind, x, y, color, rng) {
+  const stats = kind === 'bike' ? BIKE : CAR;
   return {
-    id: nextId++,
-    kind: opts.kind || 'car',
-    x, y, angle,
-    speed: 0,
-    steer: 0,
-    color: opts.color || CAR_COLORS[0],
-    health: 100,
-    wreck: false,
-    driver: opts.driver || null, // 'player' | 'traffic' | 'parked' | null
-    tyres: 4,
-    wheelie: 0,
-    lean: 0,
-    route: null,
-    stopped: 0,
-    model: opts.model || 'sedan',
+    kind, x, y, angle: rng ? rng.range(0, Math.PI * 2) : 0,
+    speed: 0, color: color || (kind === 'bike' ? BIKE_COLORS[0] : CAR_COLORS[0]),
+    damage: 0, wreck: false, parked: true, traffic: false,
+    axis: 'h', dir: 1, targetSpeed: 0, turnAt: 0,
+    airborne: 0, airT: 0, airStart: null, wheelie: 0, lean: 0,
+    tyresPopped: false, hue: 0,
   };
 }
 
-export function makeBike(x, y, angle, opts = {}) {
-  const bike = makeCar(x, y, angle, { ...opts, kind: 'bike' });
-  bike.color = opts.color || '#e83d3d';
-  return bike;
+export function spawnParkedCars(city, rng, count = 26) {
+  const cars = [];
+  for (let i = 0; i < count; i++) {
+    const v = ROADS_V[Math.floor(rng.next() * ROADS_V.length)];
+    const h = ROADS_H[Math.floor(rng.next() * ROADS_H.length)];
+    const alongRoad = rng.chance(0.5);
+    const x = alongRoad ? v + (rng.chance(0.5) ? ROAD_HALF - 12 : -(ROAD_HALF - 12)) : rng.range(120, WORLD.w - 120);
+    const y = alongRoad ? rng.range(120, WORLD.h - 120) : h + (rng.chance(0.5) ? ROAD_HALF - 12 : -(ROAD_HALF - 12));
+    if (circleHitsBuilding(city, x, y, 24)) continue;
+    const car = makeVehicle(rng.chance(0.18) ? 'bike' : 'car', x, y, rng.pick(CAR_COLORS), rng);
+    car.angle = alongRoad ? (rng.chance(0.5) ? 0 : Math.PI) : (rng.chance(0.5) ? Math.PI / 2 : -Math.PI / 2);
+    car.parked = true;
+    cars.push(car);
+  }
+  return cars;
 }
 
-// Parked cars dotted along the roads, plus moving traffic.
-export function spawnWorldVehicles(city, rng) {
-  const list = [];
-  for (let i = 0; i < 14; i++) {
-    const p = nearestRoadPoint(city, rrange(rng, 200, WORLD.w - 300), rrange(rng, 200, WORLD.h - 200));
-    const along = p.horizontal ? 0 : Math.PI / 2;
-    const side = (rng() < 0.5 ? -1 : 1) * 26;
-    const x = p.x + (p.horizontal ? 0 : side);
-    const y = p.y + (p.horizontal ? side : 0);
-    list.push(makeCar(x, y, along + (rng() < 0.5 ? 0 : Math.PI), { driver: 'parked', color: pick(rng, CAR_COLORS) }));
-  }
-  for (let i = 0; i < TRAFFIC.count; i++) {
-    list.push(spawnTrafficCar(city, rng));
-  }
-  // A taxi waiting at the first stand.
-  const stand = city.taxiStands[0];
-  const taxi = makeCar(stand.x + 40, stand.y, 0, { driver: 'parked', color: TAXI_COLOR, model: 'taxi' });
-  taxi.taxi = true;
-  list.push(taxi);
-  // Two bikes parked by the boardwalk.
-  list.push(makeBike(3200, 700, 0, { driver: 'parked' }));
-  list.push(makeBike(3200, 760, 0, { driver: 'parked' }));
-  return list;
-}
-
-export function spawnTrafficCar(city, rng) {
-  const p = nearestRoadPoint(city, rrange(rng, 200, WORLD.w - 300), rrange(rng, 200, WORLD.h - 200));
-  const car = makeCar(p.x, p.y, p.horizontal ? (rng() < 0.5 ? 0 : Math.PI) : (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2), {
-    driver: 'traffic',
-    color: pick(rng, CAR_COLORS),
-  });
-  car.route = { horizontal: p.horizontal, dir: rng() < 0.5 ? 1 : -1 };
-  car.speed = rrange(rng, 110, 170);
+export function spawnTrafficCar(city, rng, weather) {
+  const vertical = rng.chance(0.5);
+  const road = vertical ? rng.pick(ROADS_V) : rng.pick(ROADS_H);
+  const along = vertical ? rng.range(120, WORLD.h - 120) : rng.range(120, WORLD.w - 120);
+  const car = makeVehicle('car', vertical ? road : along, vertical ? along : road, rng.pick(CAR_COLORS), rng);
+  car.traffic = true;
+  car.parked = false;
+  car.axis = vertical ? 'v' : 'h';
+  car.dir = rng.chance(0.5) ? 1 : -1;
+  car.angle = vertical ? (car.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (car.dir > 0 ? 0 : Math.PI);
+  car.targetSpeed = rng.range(120, 200) * trafficFactor(weather);
+  car.speed = car.targetSpeed;
   return car;
 }
 
-// --- Player driving ----------------------------------------------------------
+// One step of arcade driving. Returns nothing; mutates the vehicle.
+export function driveVehicle(G, v, dt, input) {
+  if (v.wreck) { v.speed *= (1 - 2.4 * dt); return; }
+  const stats = v.kind === 'bike' ? BIKE : CAR;
+  const grip = wetGrip(G.weather) * (v.tyresPopped ? 0.55 : 1);
+  const fwd = input.forward, back = input.back, left = input.left, right = input.right;
+  const handbrake = input.handbrake;
 
-export function driveVehicle(v, input, dt, city, weather, handbrake) {
-  if (v.wreck) return;
-  const grip = weather ? (1 - 0.28 * weather.intensity) : 1;
-  const bike = v.kind === 'bike';
-  const tune = bike ? BIKE : CAR;
-  const maxSpeed = (v.tyres < 4 ? tune.maxSpeed * 0.45 : tune.maxSpeed) * grip;
-  const accel = tune.accel * grip;
-  if (input.up) v.speed += accel * dt;
-  if (input.down) v.speed -= (v.speed > 0 ? CAR.brake : 320) * dt;
-  if (!input.up && !input.down) v.speed -= Math.sign(v.speed) * 180 * dt;
-  v.speed = clamp(v.speed, -tune.maxReverse, maxSpeed);
-  if (Math.abs(v.speed) < 4 && !input.up && !input.down) v.speed = 0;
+  if (fwd) v.speed += stats.accel * grip * dt * (v.tyresPopped ? 0.5 : 1);
+  else if (back) v.speed -= stats.reverseAccel * dt;
+  else v.speed -= Math.sign(v.speed) * Math.min(Math.abs(v.speed), 260 * dt);
+  const max = v.tyresPopped ? stats.maxSpeed * 0.45 : stats.maxSpeed;
+  v.speed = clamp(v.speed, -stats.maxReverse, max);
 
-  const steerInput = (input.left ? -1 : 0) + (input.right ? 1 : 0);
-  const steerAuthority = clamp(Math.abs(v.speed) / 120, 0, 1) * (v.speed < 0 ? -1 : 1);
-  const gripNow = handbrake ? CAR.handbrakeGrip : CAR.grip;
-  v.angle += steerInput * tune.turnRate * steerAuthority * dt * gripNow;
-  if (handbrake && Math.abs(v.speed) > 200) {
-    v.angle += steerInput * 1.4 * dt;
-    v.speed *= 1 - 0.9 * dt;
+  const turning = (left ? -1 : 0) + (right ? 1 : 0);
+  const steer = turning * stats.turnRate * (handbrake ? 1.6 : 1) * grip;
+  const moving = clamp(Math.abs(v.speed) / 140, 0, 1);
+  v.angle += steer * moving * Math.sign(v.speed || 1) * dt;
+  if (v.kind === 'bike') {
+    v.lean = lerp(v.lean, turning * 0.35 * moving, dt * 8);
+    v.wheelie = fwd && v.speed > 260 ? lerp(v.wheelie, 1, dt * 4) : lerp(v.wheelie, 0, dt * 6);
   }
+  if (handbrake) v.speed *= (1 - 1.6 * dt);
+
   const nx = v.x + Math.cos(v.angle) * v.speed * dt;
   const ny = v.y + Math.sin(v.angle) * v.speed * dt;
-  const before = { x: v.x, y: v.y };
-  v.x = clamp(nx, 30, WORLD.w - 30);
-  v.y = clamp(ny, 30, WORLD.h - 30);
-  if (collideBuildings(city, v, bike ? 16 : 26)) {
-    const impact = Math.abs(v.speed);
-    if (impact > 240) {
-      damageVehicle(v, impact * 0.06);
-      v.speed *= -0.25;
-      if (bike && impact > BIKE.throwOffSpeed) v.thrownOff = true;
-    } else {
-      v.speed *= 0.4;
+  // Walls: slide along buildings instead of sticking.
+  const hit = circleHitsBuilding(G.city, nx, ny, stats.radius);
+  if (hit) {
+    const hard = Math.abs(v.speed) > 320;
+    if (hard) {
+      damageVehicle(v, 18);
+      if (v.kind === 'bike' && v === G.player.vehicle) throwRider(G);
     }
-    if (v.x === before.x && v.y === before.y) { /* fully blocked */ }
+    // Try sliding on each axis separately.
+    if (!circleHitsBuilding(G.city, nx, v.y, stats.radius)) v.x = nx;
+    else if (!circleHitsBuilding(G.city, v.x, ny, stats.radius)) v.y = ny;
+    else v.speed *= 0.35;
+  } else {
+    v.x = nx; v.y = ny;
   }
-  // Water is a wall for cars.
-  if (v.x > 3330) { v.x = 3330; v.speed *= 0.3; }
-  if (bike) {
-    const targetLean = clamp(steerInput * Math.abs(v.speed) / 500, -0.5, 0.5);
-    v.lean = lerp(v.lean, targetLean, dt * 6);
-    v.wheelie = (input.up && Math.abs(v.speed) > 60 && Math.abs(v.speed) < 200) ? 1 : Math.max(0, v.wheelie - dt * 2);
+  v.x = clamp(v.x, 24, WORLD.w - 24);
+  v.y = clamp(v.y, 24, WORLD.h - 24);
+  if (v.airborne > 0) {
+    v.airT += dt;
   }
+}
+
+export function throwRider(G) {
+  const p = G.player;
+  if (!p.vehicle) return;
+  p.vehicle = null;
+  p.onFoot = true;
+  p.x = clamp(p.x + (G.rng.next() - 0.5) * 40, 24, WORLD.w - 24);
+  p.y = clamp(p.y + (G.rng.next() - 0.5) * 40, 24, WORLD.h - 24);
+  p.hp = Math.max(1, p.hp - 12);
+  G.messages.push({ text: 'Thrown off the bike!', t: 2.2, color: '#ff8a80' });
 }
 
 export function damageVehicle(v, amt) {
   if (v.wreck) return;
-  v.health -= amt;
-  if (v.health <= 0) {
-    v.health = 0;
+  v.damage = clamp(v.damage + amt, 0, 100);
+  if (v.damage >= 100) {
     v.wreck = true;
     v.speed = 0;
   }
 }
 
-// --- Traffic AI ---------------------------------------------------------------
-
-export function updateTrafficCar(v, dt, city, vehicles, rng) {
-  if (v.wreck || v.driver !== 'traffic') return;
-  const wet = 0.9;
-  const cruise = TRAFFIC.cruiseSpeed * wet;
-  // Slow down for the car ahead on the same road.
-  let blocked = false;
-  for (const o of vehicles) {
-    if (o === v || o.wreck) continue;
-    const dx = o.x - v.x;
-    const dy = o.y - v.y;
-    const ahead = dx * Math.cos(v.angle) + dy * Math.sin(v.angle);
-    const side = Math.abs(-dx * Math.sin(v.angle) + dy * Math.cos(v.angle));
-    if (ahead > 0 && ahead < TRAFFIC.minGap && side < 30) { blocked = true; break; }
-  }
-  const target = blocked ? 0 : cruise;
-  v.speed += (target - v.speed) * Math.min(1, dt * 1.5);
-  if (blocked) {
-    v.blockedT = (v.blockedT || 0) + dt;
-    // Stuck behind something that never moves (a parked car, a wreck):
-    // turn around instead of waiting forever.
-    if (v.blockedT > 3) {
-      v.angle = wrapAngle(v.angle + Math.PI);
-      v.route.dir *= -1;
-      v.blockedT = 0;
+// Traffic: follow the road, slow at intersections, turn sometimes.
+export function updateTraffic(G, dt) {
+  const city = G.city;
+  const player = G.player;
+  for (const c of G.traffic) {
+    if (c.wreck) continue;
+    // Approaching an intersection? Maybe turn.
+    const onV = Math.abs(c.x - nearestRoadPoint(city, c.x, c.y).x) < 4;
+    const nearCross = c.axis === 'v'
+      ? ROADS_H.some(y => Math.abs(c.y - y) < 26)
+      : ROADS_V.some(x => Math.abs(c.x - x) < 26);
+    if (nearCross && G.rng.chance(dt * 0.5)) {
+      c.axis = c.axis === 'v' ? 'h' : 'v';
+      c.dir = G.rng.chance(0.5) ? 1 : -1;
+      c.angle = c.axis === 'v' ? (c.dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (c.dir > 0 ? 0 : Math.PI);
     }
-  } else {
-    v.blockedT = 0;
+    // Slow for the car ahead.
+    let target = c.targetSpeed;
+    for (const o of G.traffic) {
+      if (o === c || o.wreck) continue;
+      const d = dist(c.x, c.y, o.x, o.y);
+      if (d < 70 && Math.abs(angleDiff(c.angle, Math.atan2(o.y - c.y, o.x - c.x))) < 0.6) {
+        target = Math.min(target, 40);
+      }
+    }
+    // Slow near the player's vehicle.
+    if (player.vehicle && dist(c.x, c.y, player.vehicle.x, player.vehicle.y) < 90) {
+      target = Math.min(target, 60);
+    }
+    c.speed = lerp(c.speed, target, dt * 1.5);
+    const nx = c.x + Math.cos(c.angle) * c.speed * dt;
+    const ny = c.y + Math.sin(c.angle) * c.speed * dt;
+    if (circleHitsBuilding(city, nx, ny, 16)) {
+      c.dir *= -1;
+      c.angle += Math.PI;
+    } else {
+      c.x = nx; c.y = ny;
+    }
+    c.x = clamp(c.x, 30, WORLD.w - 30);
+    c.y = clamp(c.y, 30, WORLD.h - 30);
+    // Wrap around the far edge so traffic never runs dry.
+    if (c.axis === 'v' && (c.y < 60 || c.y > WORLD.h - 60)) c.y = c.y < 60 ? WORLD.h - 80 : 80;
+    if (c.axis === 'h' && (c.x < 60 || c.x > WORLD.w - 60)) c.x = c.x < 60 ? WORLD.w - 80 : 80;
   }
-  v.x += Math.cos(v.angle) * v.speed * dt;
-  v.y += Math.sin(v.angle) * v.speed * dt;
-  // At an intersection, sometimes turn onto the cross road.
-  const nearX = city.roadsX.find((rx) => Math.abs(v.x - rx) < 8);
-  const nearY = city.roadsY.find((ry) => Math.abs(v.y - ry) < 8);
-  if (v.route.horizontal && nearX !== undefined && rng() < 0.01) {
-    v.route = { horizontal: false, dir: rng() < 0.5 ? 1 : -1 };
-    v.angle = v.route.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
-    v.y = nearY ?? v.y;
-  } else if (!v.route.horizontal && nearY !== undefined && rng() < 0.01) {
-    v.route = { horizontal: true, dir: rng() < 0.5 ? 1 : -1 };
-    v.angle = v.route.dir > 0 ? 0 : Math.PI;
-    v.x = nearX ?? v.x;
+  // Keep the streets busy.
+  const want = 14;
+  if (G.traffic.length < want && G.rng.chance(dt * 0.8)) {
+    G.traffic.push(spawnTrafficCar(city, G.rng, G.weather));
   }
-  // Keep inside the city; turn around at the edges.
-  if (v.x < 80 || v.x > WORLD.w - 80 || v.y < 80 || v.y > WORLD.h - 80) {
-    v.angle = wrapAngle(v.angle + Math.PI);
-    v.route.dir *= -1;
-  }
-  if (v.x > 3300) { v.x = 3300; v.angle = wrapAngle(v.angle + Math.PI); }
 }
 
-export function nearestVehicle(vehicles, x, y, maxD) {
-  let best = null;
-  let bestD = maxD * maxD;
+// Find the nearest stealable vehicle to a point.
+export function nearestVehicle(vehicles, x, y, maxD = 60) {
+  let best = null, bd = maxD * maxD;
   for (const v of vehicles) {
     if (v.wreck) continue;
-    const dx = v.x - x;
-    const dy = v.y - y;
-    const d = dx * dx + dy * dy;
-    if (d < bestD) { bestD = d; best = v; }
+    const d2 = (v.x - x) * (v.x - x) + (v.y - y) * (v.y - y);
+    if (d2 < bd) { bd = d2; best = v; }
   }
   return best;
-}
-
-export function makeRoadblock(x, y, angle) {
-  return { kind: 'roadblock', x, y, angle, w: 90, h: 26 };
-}
-
-export function makeSpikeStrip(x, y, angle) {
-  return { kind: 'spike', x, y, angle, w: 80, h: 14, used: false };
 }

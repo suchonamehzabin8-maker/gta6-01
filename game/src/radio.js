@@ -1,57 +1,62 @@
-// Palmera Bay — Sunset Run: car radio.
-// Three live-synthesised stations. Each station is a little loop of notes
-// with its own tempo and voice; audio.js turns the notes into sound.
+// The radio: three live-synthesised stations, no audio files. Each station is
+// a small step sequencer — a bass line, a chord stab and a lead phrase over a
+// scale — scheduled a little ahead of the game clock so it stays in time.
+import { STATIONS } from './config.js';
 
-export const STATIONS = [
-  {
-    name: 'Sunset FM',
-    tag: 'golden-hour pop',
-    tempo: 112,
-    wave: 'triangle',
-    // A breezy I–V–vi–IV loop, one note a beat.
-    notes: [523, 659, 784, 880, 784, 659, 587, 659, 523, 587, 659, 784, 880, 784, 659, 587],
-  },
-  {
-    name: 'Neon Nights',
-    tag: 'midnight synth',
-    tempo: 128,
-    wave: 'sawtooth',
-    notes: [220, 220, 262, 330, 392, 330, 262, 220, 196, 220, 262, 330, 392, 440, 392, 330],
-  },
-  {
-    name: 'Coral Chill',
-    tag: 'slow bay breeze',
-    tempo: 84,
-    wave: 'sine',
-    notes: [392, 440, 494, 587, 494, 440, 392, 330, 392, 440, 494, 440, 392, 330, 294, 330],
-  },
-];
+// Frequencies (Hz) for the scales each station plays in.
+const SCALES = {
+  'Sunset FM': { bpm: 96, bass: [110, 130.8, 98, 146.8], lead: [440, 523.25, 587.33, 659.25, 523.25, 440, 392, 493.88], wave: 'triangle' },
+  'Neon Nights': { bpm: 122, bass: [55, 65.4, 49, 73.4], lead: [220, 261.6, 329.6, 392, 440, 392, 329.6, 261.6], wave: 'sawtooth' },
+  'Coral Chill': { bpm: 72, bass: [87.3, 110, 98, 130.8], lead: [349.23, 415.3, 493.88, 523.25, 493.88, 415.3, 349.23, 293.66], wave: 'sine' },
+};
 
-export function createRadio() {
-  return { station: 0, step: 0, nextIn: 0 };
-}
-
-export function currentStation(radio) {
-  return STATIONS[radio.station % STATIONS.length];
-}
-
-export function switchStation(radio) {
-  radio.station = (radio.station + 1) % STATIONS.length;
-  radio.step = 0;
-  radio.nextIn = 0;
-  return currentStation(radio);
-}
-
-// Advance the station's loop; returns a note {freq, dur, wave} when one is
-// due this tick, otherwise null. Only plays while the player is driving.
-export function radioTick(radio, dt, driving) {
-  if (!driving) return null;
-  const st = currentStation(radio);
-  radio.nextIn -= dt;
-  if (radio.nextIn > 0) return null;
-  const beat = 60 / st.tempo;
-  radio.nextIn = beat;
-  const freq = st.notes[radio.step % st.notes.length];
-  radio.step++;
-  return { freq, dur: beat * 0.92, wave: st.wave };
+export function createRadio(audio) {
+  return {
+    audio,
+    station: 0,
+    step: 0,
+    nextStepAt: 0,
+    playing: false,
+    name() { return STATIONS[this.station]; },
+    switch() {
+      this.station = (this.station + 1) % STATIONS.length;
+      this.step = 0;
+      this.nextStepAt = 0;
+      return this.name();
+    },
+    setStation(i) {
+      this.station = ((i % STATIONS.length) + STATIONS.length) % STATIONS.length;
+      this.step = 0;
+      this.nextStepAt = 0;
+    },
+    // Call every frame with the game's wall-clock seconds; the sequencer
+    // schedules notes a short way ahead so timing never slips.
+    update(now) {
+      if (!this.playing || !this.audio || typeof window === 'undefined') return;
+      const st = SCALES[this.name()];
+      const stepDur = 60 / st.bpm / 2; // eighth notes
+      if (this.nextStepAt <= 0) this.nextStepAt = now + 0.05;
+      while (this.nextStepAt < now + 0.15) {
+        const s = this.step;
+        const bar = Math.floor(s / 8) % 4;
+        const beat = s % 8;
+        // Bass on beats 0 and 4 of each bar, root follows the chord.
+        if (beat === 0 || beat === 4) {
+          this.audio.note(st.bass[bar], stepDur * 1.8, 'sine', 0.16);
+        }
+        // Lead phrase: a note on most steps, resting on step 6.
+        if (beat !== 6) {
+          const idx = (s * 3 + bar) % st.lead.length;
+          this.audio.note(st.lead[idx], stepDur * 0.9, st.wave, 0.07);
+        }
+        // A soft chord stab on beat 2.
+        if (beat === 2) {
+          this.audio.note(st.bass[bar] * 2, stepDur, 'triangle', 0.05);
+          this.audio.note(st.bass[bar] * 2.5, stepDur, 'triangle', 0.04);
+        }
+        this.step++;
+        this.nextStepAt += stepDur;
+      }
+    },
+  };
 }

@@ -1,108 +1,85 @@
-// Palmera Bay — Sunset Run: shared tuning and world constants.
-// One place for every number the other modules agree on, so a tweak here
-// retunes the whole game instead of hunting through files.
+// Palmera Bay — Sunset Run: tuning constants. One place for every number the
+// designers reach for, so a balance pass never has to hunt through modules.
+export const WORLD = { w: 3600, h: 2600 };
+export const SEED = 20261120;
 
-export const WORLD = {
-  w: 3600,
-  h: 2600,
-  roadW: 64,
-  // Vertical avenues and horizontal streets; the grid they make is the city.
-  roadsX: [300, 700, 1100, 1500, 1900, 2300, 2700, 3100],
-  roadsY: [300, 700, 1100, 1500, 1900, 2300],
-  // The bay: sand starts here, open water here. The pier reaches past both.
-  sandX: 3150,
-  waterX: 3340,
-  seed: 20261124,
-};
+// Roads: the city is a grid; traffic, missions and the race route all use it.
+export const ROAD_HALF = 30; // half-width of a road in world units
+export const ROADS_V = [300, 700, 1100, 1500, 1900, 2300, 2700, 3100];
+export const ROADS_H = [250, 650, 1050, 1450, 1850, 2250];
 
+// The beach band and the water south of it.
+export const BEACH_TOP = 2320;
+export const WATER_TOP = 2500;
+
+// The player on foot.
 export const PLAYER = {
-  walkSpeed: 235,
-  runSpeed: 300,
-  radius: 14,
-  maxHealth: 100,
-  punchDamage: 34,
-  punchRange: 46,
-  punchArc: 1.1,
-  punchCooldown: 0.45,
+  walkSpeed: 195,
+  runSpeed: 265,
+  radius: 13,
+  maxHp: 100,
+  punchDamage: 22,
+  punchRange: 34,
+  punchCooldown: 0.38,
 };
 
+// Arcade driving.
 export const CAR = {
-  accel: 520,
-  brake: 900,
-  reverseAccel: 320,
-  maxSpeed: 560,
-  maxReverse: 160,
-  turnRate: 2.6,
-  grip: 0.92,
-  handbrakeGrip: 0.35,
-  radius: 26,
-};
-
-export const BIKE = {
-  accel: 640,
-  brake: 950,
+  accel: 540,
+  reverseAccel: 300,
   maxSpeed: 640,
+  maxReverse: 240,
+  turnRate: 2.5,
+  grip: 0.92,
+  radius: 17,
+  damageSmoke: 45,
+  damageWreck: 100,
+};
+export const BIKE = {
+  accel: 660,
+  reverseAccel: 260,
+  maxSpeed: 720,
+  maxReverse: 200,
   turnRate: 3.1,
-  radius: 16,
-  throwOffSpeed: 430,
+  grip: 0.88,
+  radius: 12,
 };
 
-export const TRAFFIC = {
-  count: 26,
-  cruiseSpeed: 150,
-  minGap: 90,
-  spawnMargin: 120,
-};
-
-export const HEAT = {
-  // Heat points -> wanted stars.
-  thresholds: [40, 250, 450, 650, 900],
-  decayPerSec: 6,
-  hiddenDecayPerSec: 22,
-  stealCar: 60,
-  shoot: 45,
-  killCop: 260,
-  hitPed: 90,
-  killPed: 150,
-  max: 1000,
-};
-
-export const PRICES = {
-  repairPerHealth: 4,
-  repaint: 60,
-  tyreFix: 40,
-};
-
+// Weapons: damage, seconds between shots, spread in radians, pellet count.
 export const WEAPONS = {
-  pistol: { name: 'Pistol', damage: 34, rate: 0.28, spread: 0.05, speed: 900, range: 520, pellets: 1, ammo: Infinity, auto: false },
-  smg: { name: 'Spray Gun', damage: 16, rate: 0.09, spread: 0.14, speed: 950, range: 460, pellets: 1, ammo: 240, auto: true },
-  boomstick: { name: 'Boomstick', damage: 22, rate: 0.85, spread: 0.32, speed: 780, range: 380, pellets: 6, ammo: 36, auto: false },
+  pistol: { name: 'Pistol', damage: 34, rate: 0.26, spread: 0.045, pellets: 1, range: 520, infinite: true },
+  smg: { name: 'Spray Gun', damage: 15, rate: 0.07, spread: 0.11, pellets: 1, range: 460, infinite: false },
+  shotgun: { name: 'Boomstick', damage: 13, rate: 0.85, spread: 0.22, pellets: 6, range: 300, infinite: false },
+};
+export const WEAPON_ORDER = ['pistol', 'smg', 'shotgun'];
+
+// Wanted: heat thresholds for each star, and how heat behaves.
+export const STAR_HEAT = [15, 35, 60, 85, 105];
+export const HEAT = {
+  max: 120,
+  stealCar: 14,
+  shoot: 6,
+  killCop: 18,
+  hitPed: 8,
+  decayVisible: 1.6,
+  decayHidden: 5.5,
+  decayDriving: 2.2,
 };
 
-export const COLORS = {
-  grass: '#7fae5a',
-  grassDark: '#6f9e4e',
-  park: '#5da24a',
-  sand: '#e8d39a',
-  water: '#2e7fa8',
-  waterDeep: '#1f6391',
-  road: '#3a3f46',
-  roadLine: '#e8d44f',
-  sidewalk: '#9aa0a3',
-  downtown: '#8a7f9e',
-  building: ['#b5674e', '#c98a5a', '#7d8aa8', '#a87d9e', '#6f9e8a', '#b5a05a', '#8a6f5a', '#5a7fa8'],
-  glass: '#9fd8e8',
-  pierWood: '#8a6f4d',
-  boardwalk: '#c9a06a',
-  awning: ['#e85a5a', '#5aa8e8', '#e8b45a', '#7ed67e'],
-  neonPink: '#ff5ad0',
-  neonCyan: '#4fe8ff',
-  neonGold: '#ffd94f',
+// Money.
+export const PRICES = {
+  repairPerDamage: 3,
+  repaint: 150,
+  taxiBase: 60,
+  tokenBonus: 250,
 };
+export const STUNT = { perSecondAir: 120, perMetre: 4, bestBonus: 500 };
 
-export const KEYS = {
-  up: ['KeyW', 'ArrowUp'],
-  down: ['KeyS', 'ArrowDown'],
-  left: ['KeyA', 'ArrowLeft'],
-  right: ['KeyD', 'ArrowRight'],
-};
+// The day runs 24h of clock in ~12 minutes of play; golden hour at 17:30.
+export const CLOCK = { start: 17.5, dayLength: 720 };
+
+// Radio stations (the synth patterns live in radio.js).
+export const STATIONS = ['Sunset FM', 'Neon Nights', 'Coral Chill'];
+
+// Screenshot scenes, in the order they are named on disk.
+export const SHOTS = ['chase', 'pier', 'race', 'title'];

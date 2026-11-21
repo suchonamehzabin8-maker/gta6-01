@@ -1,569 +1,290 @@
-// Palmera Bay — Sunset Run: the game itself.
-// Boots the world, runs the loop, wires every system together. The player
-// is one object whose position follows their car or bike while driving —
-// the stale-position bug from the earlier build is fixed here by
-// construction: every system reads G.player, and G.player is synced to the
-// vehicle every frame.
+// Palmera Bay — Sunset Run: the game loop. Builds the world, wires every
+// system together, and runs the frame: input → update → render. The player's
+// position always follows the car or bike they are driving, so missions,
+// tokens and chases all read one true position.
+import { createCity, circleHitsBuilding } from './city.js';
+import { createWeather, updateWeather } from './weather.js';
+import { createAudio } from './audio.js';
+import { createRadio } from './radio.js';
+import { createInput } from './input.js';
+import {
+  makeVehicle, spawnParkedCars, spawnTrafficCar, driveVehicle,
+  updateTraffic, nearestVehicle,
+} from './vehicles.js';
+import {
+  spawnPeds, spawnJoggers, spawnGoons, updatePeople,
+  spawnFootCops, updateFootCops,
+} from './people.js';
+import {
+  createCombat, fireWeapon, punch, switchWeapon, updateCombat,
+  spawnStashPickups,
+} from './combat.js';
+import { createWanted, updateWanted, addHeat, starsForHeat } from './wanted.js';
+import {
+  MISSIONS, createMissions, startMission, updateMission,
+  offerFare, startFare, updateFare, updateTokens,
+  saveProgress, loadProgress, failMission,
+} from './missions.js';
+import { garageInRange, useGarage } from './garage.js';
+import { createStunts, updateStunts } from './stunts.js';
+import { render } from './render.js';
+import { stageShot } from './shots.js';
+import { SEED, PLAYER, WORLD, CLOCK, HEAT, SHOTS } from './config.js';
+import { makeRng, clamp, dist } from './random.js';
 
-import { WORLD, PLAYER, HEAT } from './config.js';
-import { rngFrom, clamp } from './random.js';
-import { buildCity, nearestRoadPoint, collideBuildings } from './city.js';
-import { createWeather, updateWeather, forceStorm } from './weather.js';
-import { SoundBank } from './audio.js';
-import { createRadio, radioTick, switchStation, currentStation } from './radio.js';
-import { makeCar, makeBike, spawnWorldVehicles, spawnTrafficCar, driveVehicle, damageVehicle, updateTrafficCar, nearestVehicle } from './vehicles.js';
-import { makePerson, spawnCrowd, makeGoons, updatePeople, copsChase, spawnCop, nearestPerson } from './people.js';
-import { garageAt, applyRepair, applyPaint } from './garage.js';
-import { createStunts, rampNear, startJump, updateAir } from './stunts.js';
-import { createWanted, addHeat, updateWanted, checkSpikeStrips } from './wanted.js';
-import { createCombat, switchWeapon, cycleWeapon, giveWeapon, shoot, updateBullets, punch, spawnBurst, spawnPickups, pickupNear, currentWeapon } from './combat.js';
-import { MISSIONS, createStory, currentMission, startMission, updateStory, missionObjective, createTaxi, offerFare, updateTaxi, tokenNear, tokensLeft } from './missions.js';
-import { drawGame, daylight } from './render.js';
-import { createInput, held, wasPressed, moveAxes, endFrame } from './input.js';
-import { setupShot } from './shots.js';
-
-const SAVE_KEY = 'palmera-bay-save-v1';
-
-function newGame(seed = WORLD.seed) {
-  const city = buildCity(seed);
-  const rng = rngFrom(seed ^ 0x9e3779b9);
+export function createGame(canvas) {
+  const rng = makeRng(SEED);
+  const city = createCity(SEED);
+  const audio = createAudio();
+  const radio = createRadio(audio);
   const G = {
-    seed,
-    city,
-    rng,
     time: 0,
-    frame: 0,
-    clock: 17.4, // golden hour
-    cash: 120,
-    rep: 0,
+    clock: CLOCK.start,
     mode: 'title',
     photo: false,
-    shake: 0,
-    view: { w: 1280, h: 720 },
-    camera: { x: city.spawn.x, y: city.spawn.y },
+    seed: SEED,
+    rng,
+    city,
     weather: createWeather(),
-    stormForced: false,
-    radio: createRadio(),
-    sound: new SoundBank(),
+    audio,
+    radio,
+    input: createInput(canvas),
+    camera: { x: city.spawn.x, y: city.spawn.y },
+    player: {
+      x: city.spawn.x, y: city.spawn.y,
+      angle: -Math.PI / 2, aimAngle: 0,
+      hp: PLAYER.maxHp, cash: 0, rep: 0,
+      onFoot: true, vehicle: null,
+    },
+    vehicles: spawnParkedCars(city, rng, 26),
+    traffic: [],
+    peds: [],
+    cops: [],
     wanted: createWanted(),
+    missions: createMissions(),
     combat: createCombat(),
-    story: createStory(),
-    taxi: createTaxi(),
-    stunts: createStunts(),
-    missions: MISSIONS,
-    vehicles: [],
-    people: [],
-    goons: [],
-    pickups: spawnPickups(city),
-    toasts: [],
-    missionTarget: null,
-    objective: '',
-    speedMph: 0,
-    saveT: 0,
+    stats: { bestAir: 0, bestDist: 0 },
+    messages: [],
+    garageNear: null,
+    missionDefs: MISSIONS,
     shot: null,
   };
-  G.player = {
-    x: city.spawn.x,
-    y: city.spawn.y,
-    angle: 0,
-    health: PLAYER.maxHealth,
-    vehicle: null,
-    punchAnim: 0,
-  };
-  G.vehicles = spawnWorldVehicles(city, rng);
-  G.people = spawnCrowd(city, rng);
+  G.peds = [...spawnPeds(city, rng, 34), ...spawnJoggers(city, rng), ...spawnGoons(city, rng)];
+  G.cops = spawnFootCops(city, rng, 4);
+  for (let i = 0; i < 12; i++) G.traffic.push(spawnTrafficCar(city, rng, G.weather));
+  spawnStashPickups(G);
+  loadProgress(G);
   return G;
 }
 
-export function spawnGoonsInto(G) {
-  const goons = makeGoons(G.city);
-  G.goons = goons;
-  for (const g of goons) G.people.push(g);
+function playerScreenPos(G) {
+  const p = G.player;
+  return {
+    x: p.x - (G.camera.x - 640),
+    y: p.y - (G.camera.y - 360),
+  };
 }
 
-function toast(G, text, life = 3) {
-  G.toasts.push({ text, life });
-  if (G.toasts.length > 4) G.toasts.shift();
-}
-
-function saveGame(G) {
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({
-      cash: G.cash,
-      rep: G.rep,
-      done: G.story.done,
-      index: G.story.index,
-      tokens: G.city.tokens.filter((t) => t.taken).map((t) => t.id),
-      best: G.stunts.best,
-      clock: G.clock,
-    }));
-  } catch { /* private mode or no storage: play on without saving */ }
-}
-
-function loadGame(G) {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return;
-    const s = JSON.parse(raw);
-    if (typeof s.cash === 'number') G.cash = s.cash;
-    if (typeof s.rep === 'number') G.rep = s.rep;
-    if (Array.isArray(s.done)) s.done.forEach((d, i) => { if (d) G.story.done[i] = true; });
-    if (typeof s.index === 'number') G.story.index = s.index;
-    if (Array.isArray(s.tokens)) {
-      for (const id of s.tokens) {
-        const t = G.city.tokens.find((tk) => tk.id === id);
-        if (t) t.taken = true;
-      }
+function tryEnterVehicle(G) {
+  const p = G.player;
+  if (p.onFoot) {
+    const v = nearestVehicle(G.vehicles, p.x, p.y, 62);
+    if (v) {
+      p.vehicle = v;
+      p.onFoot = false;
+      v.parked = false;
+      v.traffic = false;
+      if (v.kind === 'bike') G.messages.push({ text: 'Bike stolen!', t: 1.6, color: '#ffd166' });
+      else G.messages.push({ text: 'Car stolen!', t: 1.6, color: '#ffd166' });
+      addHeat(G, HEAT.stealCar);
+      G.audio.horn();
+      return;
     }
-    if (typeof s.best === 'number') G.stunts.best = s.best;
-    if (typeof s.clock === 'number') G.clock = s.clock;
-  } catch { /* corrupt save: start fresh */ }
-}
-
-// Where the minimap arrow and the HUD point right now.
-function computeMissionTarget(G) {
-  const story = G.story;
-  if (G.taxi.fare) return { x: G.taxi.fare.x, y: G.taxi.fare.y };
-  if (!story.active) {
-    const m = currentMission(story);
-    return m ? { x: G.city.spawn.x, y: G.city.spawn.y } : null;
-  }
-  const m = currentMission(story);
-  const step = m.steps[story.step];
-  if (!step) return null;
-  if (step.type === 'race') {
-    const cp = step.points[story.raceCp];
-    return cp ? { x: cp[0], y: cp[1] } : null;
-  }
-  if (step.type === 'defeat') return { x: G.city.stadium.x + 210, y: G.city.stadium.y + 130 };
-  if (step.x !== undefined) return { x: step.x, y: step.y };
-  return null;
-}
-
-function enterVehicle(G, v) {
-  const p = G.player;
-  p.vehicle = v;
-  v.driver = 'player';
-  v.speed = 0;
-  if (v.wasParked || v.driver === 'traffic') addHeat(G.wanted, HEAT.stealCar);
-  toast(G, v.kind === 'bike' ? 'Bike stolen — the PD noticed.' : 'Car stolen — the PD noticed.');
-  G.sound.resume();
-}
-
-function exitVehicle(G) {
-  const p = G.player;
-  const v = p.vehicle;
-  if (!v) return;
-  v.driver = 'parked';
-  v.speed = 0;
-  const side = 34;
-  p.x = v.x + Math.cos(v.angle + Math.PI / 2) * side;
-  p.y = v.y + Math.sin(v.angle + Math.PI / 2) * side;
-  p.angle = v.angle;
-  p.vehicle = null;
-}
-
-function hurtPlayer(G, dmg) {
-  const p = G.player;
-  p.health -= dmg;
-  G.shake = Math.max(G.shake, 6);
-  if (p.health <= 0) {
-    p.health = 0;
-    G.mode = 'wasted';
-    G.sound.engine(0, false);
-    G.sound.siren(false);
-  }
-}
-
-function processBulletEvents(G, events) {
-  for (const e of events) {
-    if (e.type === 'hit-wall') {
-      spawnBurst(G.combat, e.x, e.y, '#c9c9c9', 4);
-    } else if (e.type === 'hit-vehicle') {
-      damageVehicle(e.vehicle, e.damage);
-      spawnBurst(G.combat, e.x, e.y, '#ffd94f', 6);
-      G.sound.hit();
-      if (e.vehicle.police) addHeat(G.wanted, 30);
-    } else if (e.type === 'hit-person') {
-      const person = e.person;
-      spawnBurst(G.combat, e.x, e.y, '#e83d3d', 6);
-      G.sound.hit();
-      if (person.kind === 'goon') {
-        // Goons take three hits; no heat, no cash for dropping one.
-        person.hp -= 1;
-        if (person.hp <= 0) {
-          person.state = 'down';
-          G.story.goonsDown++;
-          toast(G, `Goon down — ${G.story.goonsDown}/4.`);
-        }
-      } else if (person.kind === 'cop') {
-        person.hp -= 1;
-        if (person.hp <= 0) {
-          person.state = 'down';
-          addHeat(G.wanted, HEAT.killCop);
-          toast(G, 'Cop down — the heat is on you now.');
-        }
-      } else {
-        person.state = 'down';
-        addHeat(G.wanted, HEAT.killPed);
-        toast(G, 'Pedestrian down. The city saw that.');
-      }
-    }
-  }
-}
-
-function processPunchHits(G, hits) {
-  for (const h of hits) {
-    if (h.type === 'person') {
-      const person = h.target;
-      if (person.kind === 'goon') {
-        person.hp -= 1;
-        if (person.hp <= 0) {
-          person.state = 'down';
-          G.story.goonsDown++;
-          toast(G, `Goon down — ${G.story.goonsDown}/4.`);
-        } else {
-          person.state = 'chase';
-          person.target = G.player;
-        }
-      } else if (person.kind === 'cop') {
-        person.state = 'down';
-        addHeat(G.wanted, HEAT.killCop);
-      } else {
-        person.state = 'down';
-        addHeat(G.wanted, HEAT.hitPed);
-        person.panic = 2;
-      }
-      G.sound.punch();
-    } else if (h.type === 'vehicle') {
-      damageVehicle(h.target, 12);
-      G.sound.punch();
-    }
-  }
-}
-
-function updatePlayer(G, input, dt) {
-  const p = G.player;
-  const axes = moveAxes(input);
-  if (p.vehicle) {
+    // Or accept a taxi fare.
+    startFare(G);
+  } else if (p.vehicle) {
     const v = p.vehicle;
-    const handbrake = held(input, 'Space');
-    driveVehicle(v, { up: axes.y < 0, down: axes.y > 0, left: axes.x < 0, right: axes.x > 0 }, dt, G.city, G.weather, handbrake);
-    // The player's position follows the car or bike — every system reads it.
-    p.x = v.x;
-    p.y = v.y;
-    p.angle = v.angle;
-    G.speedMph = Math.abs(v.speed) * 0.18;
-    G.sound.engine(Math.abs(v.speed) / 600, true, v.kind === 'bike');
-    // Ramps.
-    const ramp = rampNear(G.city, v.x, v.y);
-    if (ramp && !G.stunts.air) startJump(G.stunts, ramp, v);
-    if (G.stunts.air) {
-      const landed = updateAir(G.stunts, v, dt);
-      if (landed) {
-        G.cash += landed.payout;
-        toast(G, landed.isBest ? `NEW BEST JUMP! +$${landed.payout}` : `Jump +$${landed.payout}`);
-        G.sound.coin();
-      }
-    }
-    // Spike strips pop tyres.
-    if (checkSpikeStrips(G.wanted, v)) {
-      toast(G, 'Spike strip! Tyres gone — find a garage (G).');
-      G.sound.crash();
-    }
-    // Exiting.
-    if (wasPressed(input, 'KeyE')) exitVehicle(G);
-  } else {
-    G.speedMph = 0;
-    G.sound.engine(0, false);
-    const moving = axes.x !== 0 || axes.y !== 0;
-    const speed = moving ? PLAYER.walkSpeed : 0;
-    if (moving) {
-      const len = Math.hypot(axes.x, axes.y);
-      p.x += (axes.x / len) * speed * dt;
-      p.y += (axes.y / len) * speed * dt;
-      p.angle = Math.atan2(axes.y, axes.x);
-      p.x = clamp(p.x, 30, WORLD.w - 30);
-      p.y = clamp(p.y, 30, WORLD.h - 30);
-      const probe = { x: p.x, y: p.y };
-      // Buildings push the player out; water is a wall.
-      collideBuildings(G.city, probe, PLAYER.radius);
-      p.x = probe.x;
-      p.y = probe.y;
-      if (p.x > 3330) p.x = 3330;
-    }
-    // Aim at the mouse.
-    const mx = G.camera.x + (input.mouse.x - G.view.w / 2);
-    const my = G.camera.y + (input.mouse.y - G.view.h / 2);
-    p.angle = Math.atan2(my - p.y, mx - p.x);
-    // Punch.
-    if (wasPressed(input, 'KeyF')) {
-      const hits = punch(G.combat, p.x, p.y, p.angle, G.people, G.vehicles);
-      processPunchHits(G, hits);
-    }
-    // Shoot.
-    if (input.mouse.down) {
-      if (shoot(G.combat, p.x, p.y, p.angle)) {
-        G.sound.shot(currentWeapon(G.combat).name === 'Boomstick' ? 'boomstick' : G.combat.weapon);
-        addHeat(G.wanted, 2);
-      }
-    }
-    // Enter a car or bike.
-    if (wasPressed(input, 'KeyE')) {
-      const v = nearestVehicle(G.vehicles, p.x, p.y, 64);
-      if (v && !v.wreck) enterVehicle(G, v);
+    p.vehicle = null;
+    p.onFoot = true;
+    p.x = clamp(v.x + Math.cos(v.angle + Math.PI / 2) * 26, 24, WORLD.w - 24);
+    p.y = clamp(v.y + Math.sin(v.angle + Math.PI / 2) * 26, 24, WORLD.h - 24);
+    v.speed = 0;
+  }
+}
+
+function moveOnFoot(G, dt) {
+  const p = G.player;
+  const input = G.input;
+  const fx = (input.down('KeyD') || input.down('ArrowRight') ? 1 : 0)
+    - (input.down('KeyA') || input.down('ArrowLeft') ? 1 : 0);
+  const fy = (input.down('KeyS') || input.down('ArrowDown') ? 1 : 0)
+    - (input.down('KeyW') || input.down('ArrowUp') ? 1 : 0);
+  if (fx === 0 && fy === 0) return;
+  const len = Math.hypot(fx, fy);
+  const running = input.down('ShiftLeft') || input.down('ShiftRight');
+  const speed = (running ? PLAYER.runSpeed : PLAYER.walkSpeed) * dt;
+  const nx = p.x + (fx / len) * speed;
+  const ny = p.y + (fy / len) * speed;
+  if (!circleHitsBuilding(G.city, nx, p.y, PLAYER.radius) && ny < 2490) p.x = nx;
+  if (!circleHitsBuilding(G.city, p.x, ny, PLAYER.radius) && ny < 2490) p.y = ny;
+  p.x = clamp(p.x, 24, WORLD.w - 24);
+  p.y = clamp(p.y, 24, 2490);
+  p.angle = Math.atan2(fy, fx);
+}
+
+function update(G, dt) {
+  const p = G.player;
+  const input = G.input;
+
+  // Aim follows the mouse, from the player's screen position.
+  const sp = playerScreenPos(G);
+  p.aimAngle = Math.atan2(input.mouse.y - sp.y, input.mouse.x - sp.x);
+
+  // One-shot keys.
+  if (input.hit('KeyM')) G.audio.toggleMute();
+  if (input.hit('KeyP')) { G.photo = !G.photo; }
+  if (input.hit('KeyC')) {
+    const name = G.radio.switch();
+    G.messages.push({ text: `♪ ${name}`, t: 1.4, color: '#ffd166' });
+  }
+  if (input.hit('Escape')) {
+    if (G.mode === 'playing') { G.mode = 'paused'; saveProgress(G); }
+    else if (G.mode === 'paused') G.mode = 'playing';
+  }
+  if (input.hit('KeyN')) {
+    if (G.mode === 'title') { G.mode = 'playing'; G.audio.unlock(); }
+    if (G.mode === 'playing' && G.missions.active < 0 && G.missions.next < MISSIONS.length) {
+      startMission(G, G.missions.next);
+    } else if (G.mode === 'complete') {
+      G.mode = 'playing';
     }
   }
-  // Garage: repair + repaint, or paint only when already perfect.
-  if (wasPressed(input, 'KeyG') && p.vehicle) {
-    const g = garageAt(G.city, p.x, p.y);
-    if (g) {
-      const v = p.vehicle;
-      let res;
-      if (v.health < 100 || v.tyres < 4) res = applyRepair(G, v, true);
-      else res = applyPaint(G, v);
-      toast(G, res.message);
-      if (res.ok) { G.sound.coin(); saveGame(G); }
+  if (input.hit('KeyR')) {
+    if (G.mode === 'wasted' || G.mode === 'busted') {
+      p.hp = PLAYER.maxHp;
+      p.x = G.city.spawn.x; p.y = G.city.spawn.y;
+      p.onFoot = true; p.vehicle = null;
+      G.wanted.heat = 0;
+      G.mode = 'playing';
+    } else if (G.missions.active >= 0) {
+      failMission(G, 'Restarted');
+    }
+  }
+  if (G.mode !== 'playing') {
+    // Menus: the city keeps living behind them, but nothing can be played.
+    G.time += dt;
+    G.clock = (G.clock + dt * (24 / CLOCK.dayLength)) % 24;
+    updateWeather(G.weather, dt, G.rng, G.camera);
+    updateTraffic(G, dt);
+    updatePeople(G, dt);
+    G.audio.setEngine(false);
+    input.endFrame();
+    return;
+  }
+  if (input.hit('KeyE')) tryEnterVehicle(G);
+  if (input.hit('KeyF')) punch(G);
+  if (input.hit('Digit1')) { G.combat.weapon = 'pistol'; }
+  if (input.hit('Digit2') && G.combat.ammo.smg > 0) { G.combat.weapon = 'smg'; }
+  if (input.hit('Digit3') && G.combat.ammo.shotgun > 0) { G.combat.weapon = 'shotgun'; }
+  if (input.mouse.wheel !== 0) switchWeapon(G, input.mouse.wheel > 0 ? 1 : -1);
+  if (input.hit('KeyG') && p.vehicle) {
+    useGarage(G, input.down('ShiftLeft') || input.down('ShiftRight'));
+  }
+  if (input.mouse.down) fireWeapon(G);
+
+  // Movement.
+  if (p.vehicle) {
+    if (p.vehicle.wreck) {
+      // A wrecked car spits its driver out.
+      p.vehicle = null;
+      p.onFoot = true;
     } else {
-      toast(G, 'No garage here — look for the green ring.');
+      driveVehicle(G, p.vehicle, dt, {
+        forward: input.down('KeyW') || input.down('ArrowUp'),
+        back: input.down('KeyS') || input.down('ArrowDown'),
+        left: input.down('KeyA') || input.down('ArrowLeft'),
+        right: input.down('KeyD') || input.down('ArrowRight'),
+        handbrake: input.down('Space'),
+      });
+      p.x = p.vehicle.x;
+      p.y = p.vehicle.y;
+      p.angle = p.vehicle.angle;
     }
+  } else {
+    moveOnFoot(G, dt);
   }
+
+  // The world ticks.
+  G.time += dt;
+  G.clock = (G.clock + dt * (24 / CLOCK.dayLength)) % 24;
+  updateWeather(G.weather, dt, G.rng, G.camera);
+  updateTraffic(G, dt);
+  updatePeople(G, dt);
+  updateFootCops(G, dt);
+  updateWanted(G, dt);
+  updateCombat(G, dt);
+  updateMission(G, dt);
+  updateFare(G, dt);
+  updateTokens(G);
+  updateStunts(G, dt);
+  offerFare(G);
+  G.garageNear = garageInRange(G);
+
+  // Toasts age out.
+  for (const m of G.messages) m.t -= dt;
+  G.messages = G.messages.filter(m => m.t > 0);
+
+  // The radio and the engine hum follow the game, not the menus.
+  G.radio.playing = G.mode === 'playing';
+  G.radio.update(G.time);
+  if (p.vehicle && G.mode === 'playing') {
+    G.audio.setEngine(true, Math.abs(p.vehicle.speed) / 700, p.vehicle.kind === 'bike');
+  } else {
+    G.audio.setEngine(false);
+  }
+  G.audio.setRain(G.weather.intensity > 0.05, G.weather.intensity);
+  if (G.weather.thunderAt > 0 && G.weather.phaseT >= G.weather.thunderAt) {
+    G.audio.thunder();
+    G.weather.thunderAt = -1;
+  }
+
+  // Wasted ends the run until R.
+  if (p.hp <= 0 && G.mode === 'playing') {
+    G.mode = 'wasted';
+    G.audio.badJingle();
+    saveProgress(G);
+  }
+  input.endFrame();
 }
 
-function updateWorld(G, input, dt) {
-  // Clock: a full day takes four minutes of play.
-  G.clock = (G.clock + dt * 0.1) % 24;
-  updateWeather(G.weather, dt, G.rng);
-  if (G.weather.thunderDue) {
-    G.weather.thunderDue = false;
-    G.sound.thunder();
-  }
-  updatePlayer(G, input, dt);
-  // Traffic.
-  for (const v of G.vehicles) {
-    if (v.driver === 'traffic') updateTrafficCar(v, dt, G.city, G.vehicles, G.rng);
-  }
-  // Wanted system + its events.
-  updateWanted(G.wanted, dt, G.city, G.player, G.vehicles, G.people, G.rng, (e) => {
-    if (e.type === 'rammed') {
-      const v = G.player.vehicle;
-      if (v) {
-        damageVehicle(v, 8);
-        hurtPlayer(G, 4);
-        G.sound.crash();
-      }
-    } else if (e.type === 'arrested') {
-      G.mode = 'busted';
-      G.sound.engine(0, false);
-      G.sound.siren(false);
-    }
-  });
-  G.sound.siren(G.wanted.stars >= 1);
-  // People.
-  const danger = G.combat.bullets.length ? { x: G.player.x, y: G.player.y, radius: 320 } : null;
-  updatePeople(G.people, dt, G.city, G.player, danger, G.rng);
-  copsChase(G.people, G.player, G.wanted.stars);
-  // Goons chase the player during the brawl.
-  for (const g of G.goons) {
-    if (g.state !== 'down' && G.story.active) {
-      const m = currentMission(G.story);
-      if (m && m.id === 'bayfront-brawl') {
-        const d = Math.hypot(G.player.x - g.x, G.player.y - g.y);
-        if (d < 700) { g.state = 'chase'; g.target = G.player; }
-      }
-    }
-  }
-  // Bullets.
-  const events = updateBullets(G.combat, dt, G.city, G.vehicles, G.people);
-  processBulletEvents(G, events);
-  // Pickups, stashes, tokens.
-  const pk = pickupNear(G.pickups, G.player.x, G.player.y);
-  if (pk) {
-    pk.taken = true;
-    if (pk.kind === 'health') G.player.health = Math.min(100, G.player.health + 40);
-    else if (pk.kind === 'ammo') { G.combat.ammo.smg += 60; G.combat.ammo.boomstick += 12; }
-    else G.cash += 40;
-    G.sound.coin();
-  }
-  const stash = G.city.stashes.find((s) => !s.taken && Math.hypot(s.x - G.player.x, s.y - G.player.y) < 34);
-  if (stash) {
-    stash.taken = true;
-    giveWeapon(G.combat, stash.kind, stash.kind === 'smg' ? 240 : 36);
-    toast(G, stash.kind === 'smg' ? 'Spray Gun picked up!' : 'Boomstick picked up!');
-    G.sound.coin();
-  }
-  const token = tokenNear(G.city, G.player.x, G.player.y);
-  if (token) {
-    token.taken = true;
-    G.cash += 50;
-    toast(G, `Sunset token! ${tokensLeft(G.city)} left — +$50.`);
-    G.sound.coin();
-    saveGame(G);
-  }
-  // Taxi fares.
-  offerFare(G.taxi, G, G.rng);
-  const fare = updateTaxi(G.taxi, G, dt);
-  if (fare && fare.type === 'fare') {
-    toast(G, `Fare complete — +$${fare.pay}.`);
-    G.sound.coin();
-  }
-  // Radio.
-  const note = radioTick(G.radio, dt, !!G.player.vehicle);
-  if (note) G.sound.radioNote(note);
-  // Story.
-  const ev = updateStory(G.story, G, dt);
-  if (ev) {
-    if (ev.type === 'complete') {
-      toast(G, `${ev.mission.name} complete — +$${ev.mission.pay}!`);
-      G.sound.jingle('mission');
-      saveGame(G);
-      if (ev.finished) {
-        G.mode = 'complete';
-        G.sound.engine(0, false);
-        G.sound.siren(false);
-      }
-    } else if (ev.type === 'failed') {
-      toast(G, `Mission failed: ${ev.reason} — press R to retry.`);
-    } else if (ev.type === 'step' && ev.checkpoint) {
-      toast(G, `Checkpoint ${ev.checkpoint}!`);
-      G.sound.coin();
-    }
-  }
-  // Camera follows the player.
-  const camTarget = { x: G.player.x, y: G.player.y };
-  G.camera.x += (camTarget.x - G.camera.x) * Math.min(1, dt * 5);
-  G.camera.y += (camTarget.y - G.camera.y) * Math.min(1, dt * 5);
-  G.missionTarget = computeMissionTarget(G);
-  G.objective = missionObjective(G.story);
-  // Toasts age.
-  for (let i = G.toasts.length - 1; i >= 0; i--) {
-    G.toasts[i].life -= dt;
-    if (G.toasts[i].life <= 0) G.toasts.splice(i, 1);
-  }
-  G.shake = Math.max(0, G.shake - dt * 30);
-  // Autosave now and then.
-  G.saveT += dt;
-  if (G.saveT > 20) { G.saveT = 0; saveGame(G); }
+function frame(G, ctx, t) {
+  const dt = Math.min(0.05, (t - frame.last) / 1000 || 0.016);
+  frame.last = t;
+  if (G.mode !== 'paused') update(G, dt);
+  render(G, ctx);
+  requestAnimationFrame(next => frame(G, ctx, next));
 }
 
-function updateKeys(G, input) {
-  if (wasPressed(input, 'KeyM')) {
-    G.sound.setMuted(!G.sound.muted);
-    toast(G, G.sound.muted ? 'Muted.' : 'Sound on.');
-  }
-  if (wasPressed(input, 'KeyC')) {
-    const st = switchStation(G.radio);
-    toast(G, `♪ ${st.name} — ${st.tag}`);
-  }
-  if (wasPressed(input, 'KeyP')) {
-    G.photo = !G.photo;
-    toast(G, G.photo ? 'Photo mode — HUD hidden.' : 'Photo mode off.');
-  }
-  if (wasPressed(input, 'Digit1')) switchWeapon(G.combat, 'pistol');
-  if (wasPressed(input, 'Digit2')) switchWeapon(G.combat, 'smg');
-  if (wasPressed(input, 'Digit3')) switchWeapon(G.combat, 'boomstick');
-  if (input.wheel !== 0) cycleWeapon(G.combat, input.wheel > 0 ? 1 : -1);
-  if (wasPressed(input, 'KeyN')) {
-    if (!G.story.active) {
-      if (startMission(G.story, G)) {
-        const m = currentMission(G.story);
-        toast(G, `${m.name}: ${m.brief}`);
-        G.sound.resume();
-      }
-    }
-  }
-  if (wasPressed(input, 'KeyR') && G.story.active) {
-    const m = currentMission(G.story);
-    G.story.active = false;
-    G.story.failed = null;
-    startMission(G.story, G);
-    toast(G, `${m.name} restarted.`);
-  }
-}
-
-function boot() {
-  const canvas = document.getElementById('game');
+export function start(canvas) {
   const ctx = canvas.getContext('2d');
+  const G = createGame(canvas);
   const params = new URLSearchParams(window.location.search);
-  const seedParam = Number(params.get('seed') || WORLD.seed);
-  const G = newGame(Number.isFinite(seedParam) ? seedParam : WORLD.seed);
-  G.spawnGoons = () => spawnGoonsInto(G);
-  loadGame(G);
-  const input = createInput(canvas);
-
-  function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    G.view.w = canvas.width;
-    G.view.h = canvas.height;
+  const shot = params.get('shot');
+  if (shot && SHOTS.includes(shot)) {
+    // Deterministic screenshot mode: stage the scene, render one frozen
+    // frame, and say so. The world does not advance.
+    G.shot = shot;
+    stageShot(G, shot);
+    render(G, ctx);
+    window.__shotReady = true;
+    return G;
   }
-  window.addEventListener('resize', resize);
-  resize();
-
-  // Screenshot scenes (?shot=chase|play|race|title) stage a fixed moment.
-  const shotName = params.get('shot');
-  if (shotName) {
-    G.shot = shotName;
-    setupShot(G, shotName);
-  }
-
-  let last = performance.now();
-  let shotFrames = 0;
-  function frame(now) {
-    // Fixed steps in shot mode so a staged scene renders identically twice.
-    const dt = G.shot ? 1 / 60 : Math.min(0.05, (now - last) / 1000);
-    last = now;
-    // In shot mode the world is frozen: the staged scene renders exactly
-    // the same pixels on every take, whatever the frame count.
-    if (!G.shot) {
-      G.time += dt;
-      G.frame++;
-    }
-    if (G.mode === 'title') {
-      if (wasPressed(input, 'Enter') || input.clicked) {
-        G.mode = 'play';
-        G.sound.resume();
-      }
-      // Slow drift over the city behind the title.
-      G.camera.x = G.city.spawn.x + Math.sin(G.time * 0.05) * 200;
-      G.camera.y = G.city.spawn.y + Math.cos(G.time * 0.04) * 120;
-      G.objective = missionObjective(G.story);
-      G.missionTarget = computeMissionTarget(G);
-    } else if (G.mode === 'play') {
-      if (wasPressed(input, 'Escape')) {
-        G.mode = 'pause';
-      } else if (!G.shot) {
-        updateKeys(G, input);
-        updateWorld(G, input, dt);
-      }
-    } else if (G.mode === 'pause') {
-      if (wasPressed(input, 'Escape') || wasPressed(input, 'Enter')) G.mode = 'play';
-      updateKeys(G, input);
-    } else if (G.mode === 'wasted' || G.mode === 'busted' || G.mode === 'complete') {
-      if (wasPressed(input, 'Enter') || input.clicked) {
-        const keep = { cash: G.cash, rep: G.rep };
-        const fresh = newGame(G.seed);
-        fresh.cash = keep.cash;
-        fresh.rep = keep.rep;
-        Object.assign(G, fresh);
-        G.spawnGoons = () => spawnGoonsInto(G);
-        G.mode = 'play';
-      }
-    }
-    ctx.save();
-    if (G.shake > 0) {
-      ctx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
-    }
-    drawGame(ctx, G);
-    ctx.restore();
-    endFrame(input);
-    if (G.shot) {
-      shotFrames++;
-      if (shotFrames >= 4) window.__shotReady = true;
-    }
-    requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
+  window.__game = G;
+  requestAnimationFrame(t => { frame.last = t; frame(G, ctx, t); });
+  return G;
 }
 
-boot();
+if (typeof document !== 'undefined') {
+  const canvas = document.getElementById('game');
+  if (canvas) start(canvas);
+}

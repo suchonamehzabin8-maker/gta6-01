@@ -1,86 +1,106 @@
-// Palmera Bay — Sunset Run: the minimap.
-// A small live map in the corner: roads, water, the player arrow, police,
-// the mission marker, tokens, garages, ramps and goons.
-
+// The minimap — the whole city shrunk to a corner of the HUD, with the
+// player, police, mission marker, tokens, garages and ramps on it.
 import { WORLD } from './config.js';
+import { MISSIONS } from './missions.js';
 
-export function drawMinimap(ctx, G) {
-  const w = 196;
-  const h = 142;
-  const x0 = G.view.w - w - 14;
-  const y0 = 14;
-  const sx = w / WORLD.w;
-  const sy = h / WORLD.h;
-
+export function drawMinimap(ctx, G, x, y, size) {
+  const s = size / WORLD.w;
+  const city = G.city;
+  const p = G.player;
   ctx.save();
-  ctx.globalAlpha = 0.92;
-  ctx.fillStyle = '#10151c';
-  ctx.fillRect(x0 - 4, y0 - 4, w + 8, h + 8);
-  ctx.globalAlpha = 1;
-  // Water and sand on the east edge.
-  ctx.fillStyle = '#1f6391';
-  ctx.fillRect(x0 + WORLD.sandX * sx, y0, w - WORLD.sandX * sx, h);
-  ctx.fillStyle = '#e8d39a';
-  ctx.fillRect(x0 + WORLD.sandX * sx - 4, y0, 4, h);
+  ctx.beginPath();
+  ctx.rect(x, y, size, size * (WORLD.h / WORLD.w));
+  ctx.clip();
+  // Water, sand, land.
+  ctx.fillStyle = '#1b4d6b';
+  ctx.fillRect(x, y, size, size * (WORLD.h / WORLD.w));
+  ctx.fillStyle = '#3f7a52';
+  ctx.fillRect(x, y, size, size * (2320 / WORLD.w));
+  ctx.fillStyle = '#e8d29a';
+  ctx.fillRect(x, y + size * (2320 / WORLD.w), size, size * ((2500 - 2320) / WORLD.w));
   // Roads.
-  ctx.strokeStyle = '#5a6068';
-  ctx.lineWidth = 2;
-  for (const rx of G.city.roadsX) {
+  ctx.strokeStyle = '#5a5f6a';
+  ctx.lineWidth = Math.max(2, size * 0.012);
+  for (const rx of [300, 700, 1100, 1500, 1900, 2300, 2700, 3100]) {
     ctx.beginPath();
-    ctx.moveTo(x0 + rx * sx, y0);
-    ctx.lineTo(x0 + rx * sx, y0 + h);
+    ctx.moveTo(x + rx * s, y);
+    ctx.lineTo(x + rx * s, y + size * (WORLD.h / WORLD.w));
     ctx.stroke();
   }
-  for (const ry of G.city.roadsY) {
+  for (const ry of [250, 650, 1050, 1450, 1850, 2250]) {
     ctx.beginPath();
-    ctx.moveTo(x0, y0 + ry * sy);
-    ctx.lineTo(x0 + w, y0 + ry * sy);
+    ctx.moveTo(x, y + ry * s);
+    ctx.lineTo(x + size, y + ry * s);
     ctx.stroke();
   }
-  const dot = (x, y, color, r = 3) => {
+  const dot = (wx, wy, color, r = 3) => {
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(x0 + x * sx, y0 + y * sy, r, 0, Math.PI * 2);
+    ctx.arc(x + wx * s, y + wy * s, r, 0, Math.PI * 2);
     ctx.fill();
   };
-  // Garages, ramps, tokens.
-  for (const g of G.city.garages) dot(g.x, g.y, '#3ddc5a', 3);
-  for (const r of G.city.ramps) dot(r.x, r.y, '#ff9a3d', 2.5);
-  for (const t of G.city.tokens) if (!t.taken) dot(t.x, t.y, '#ffd94f', 2);
-  // Goons, when the brawl is on.
-  if (G.story.active && G.story.index < 12) {
-    const m = G.story && G.missions[G.story.index];
-    if (m && m.id === 'bayfront-brawl') {
-      for (const g of G.goons) if (g.state !== 'down') dot(g.x, g.y, '#c95aff', 3);
-    }
+  // Buildings as faint blocks.
+  ctx.fillStyle = 'rgba(40,44,54,0.85)';
+  for (const b of city.buildings) {
+    ctx.fillRect(x + b.x * s, y + b.y * s, Math.max(1.5, b.w * s), Math.max(1.5, b.h * s));
   }
-  // Police.
-  for (const c of G.wanted.cruisers) dot(c.x, c.y, '#ff4d4d', 3);
-  if (G.wanted.heli) dot(G.wanted.heli.x, G.wanted.heli.y, '#ff4d4d', 4);
-  // Mission target.
-  const target = G.missionTarget;
-  if (target) {
-    ctx.fillStyle = '#ffd94f';
+  // Garages and ramps.
+  for (const g of city.garages) dot(g.x, g.y, '#3d8bfd', 3.5);
+  for (const r of city.ramps) dot(r.x, r.y, '#f2c14e', 3);
+  // Sunset tokens still hidden.
+  for (const t of city.tokens) if (!t.found) dot(t.x, t.y, '#ffd166', 2.5);
+  // Mission marker / fare dropoff.
+  const marker = missionMarker(G);
+  if (marker) {
+    ctx.fillStyle = '#ff5d8f';
     ctx.beginPath();
-    ctx.arc(x0 + target.x * sx, y0 + target.y * sy, 5, 0, Math.PI * 2);
+    ctx.arc(x + marker.x * s, y + marker.y * s, 5, 0, Math.PI * 2);
     ctx.fill();
     ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1.5;
     ctx.stroke();
   }
-  // The player: a white triangle pointing where they face.
-  const px = x0 + G.player.x * sx;
-  const py = y0 + G.player.y * sy;
-  ctx.save();
-  ctx.translate(px, py);
-  ctx.rotate(G.player.angle);
+  // Police, helicopter.
+  for (const c of G.wanted.cruisers) dot(c.x, c.y, '#ff4757', 3);
+  if (G.wanted.heli) dot(G.wanted.heli.x, G.wanted.heli.y, '#ff4757', 4);
+  // The player, on top, with a white ring.
+  const px = p.vehicle ? p.vehicle.x : p.x;
+  const py = p.vehicle ? p.vehicle.y : p.y;
   ctx.fillStyle = '#fff';
   ctx.beginPath();
-  ctx.moveTo(6, 0);
-  ctx.lineTo(-4, -4);
-  ctx.lineTo(-4, 4);
-  ctx.closePath();
+  ctx.arc(x + px * s, y + py * s, 5, 0, Math.PI * 2);
   ctx.fill();
+  ctx.fillStyle = '#22d3ee';
+  ctx.beginPath();
+  ctx.arc(x + px * s, y + py * s, 3, 0, Math.PI * 2);
+  ctx.fill();
+  // Frame.
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, size, size * (WORLD.h / WORLD.w));
   ctx.restore();
-  ctx.restore();
+}
+
+function missionMarker(G) {
+  const m = G.missions;
+  if (m.fare) return m.fare.dropoff;
+  if (m.active < 0) return null;
+  const def = MISSIONS[m.active];
+  if (!def) return null;
+  const step = def.steps[m.step];
+  if (!step) return null;
+  if (step.type === 'race') {
+    const cp = G.city.raceRoute[m.raceCp];
+    return cp ? { x: cp.x, y: cp.y } : null;
+  }
+  if (step.type === 'collect') {
+    const next = m.crates.find(c => !c.got);
+    return next ? { x: next.x, y: next.y } : null;
+  }
+  if (step.type === 'defeat') {
+    const goon = G.peds.find(pd => pd.kind === 'goon' && pd.hp > 0);
+    return goon ? { x: goon.x, y: goon.y } : null;
+  }
+  if (step.x !== undefined) return { x: step.x, y: step.y };
+  return null;
 }

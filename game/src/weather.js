@@ -1,109 +1,85 @@
-// Palmera Bay — Sunset Run: bay weather.
-// Storms roll in on their own schedule — gathering clouds, a downpour with
-// rain streaks, lightning and delayed thunder, then clearing. Wet roads cut
-// grip and slow the traffic. A mission can force a storm.
+// Weather over Palmera Bay — storms gather, break, and clear on their own
+// schedule. Pure state + update; the renderer reads the phases and the rain
+// drops, and the driving model reads the grip.
+import { clamp, lerp } from './random.js';
+
+export const PHASES = ['clear', 'gathering', 'storm', 'clearing'];
 
 export function createWeather() {
   return {
-    phase: 'clear', // clear | clouds | storm | clearing
-    t: 0, // seconds in this phase
-    intensity: 0, // 0..1, how hard it is raining right now
-    lightning: 0, // flash timer, >0 while the sky is lit
-    thunderIn: -1, // seconds until the thunder sound, -1 = none queued
-    forced: false, // a mission is holding the storm
-    nextChange: 45,
-    seed: 7,
+    phase: 'clear',
+    phaseT: 0,
+    // Seconds until the next phase change; seeded by the game, not fixed.
+    nextIn: 55,
+    intensity: 0, // 0 clear .. 1 full storm
+    rain: [], // {x, y, len, speed} in screen-ish world space around camera
+    flashes: [], // {t} lightning flashes, t counts down
+    thunderAt: -1, // world time at which the thunder should sound
+    lightningX: 0,
+    sky: 'CLEAR',
   };
 }
 
-const PHASE_LEN = { clear: 55, clouds: 18, storm: 40, clearing: 16 };
+export function forceStorm(w) {
+  w.phase = 'storm';
+  w.phaseT = 0;
+  w.nextIn = 40;
+  w.intensity = 1;
+  w.sky = 'BAY STORM';
+}
 
-export function updateWeather(w, dt, rng) {
-  w.t += dt;
-  w.seed += dt;
-  if (w.lightning > 0) w.lightning -= dt;
-  if (w.thunderIn > 0) {
-    w.thunderIn -= dt;
-    if (w.thunderIn <= 0) {
-      w.thunderIn = -1;
-      w.thunderDue = true;
-    }
+// Advance the storm machine. rng is the game's seeded source so a staged
+// scene can force a storm and a live game still varies.
+export function updateWeather(w, dt, rng, cam) {
+  w.phaseT += dt;
+  if (w.phaseT >= w.nextIn) {
+    w.phaseT = 0;
+    const order = { clear: 'gathering', gathering: 'storm', storm: 'clearing', clearing: 'clear' };
+    w.phase = order[w.phase];
+    w.nextIn = w.phase === 'clear' ? rng.range(45, 110)
+      : w.phase === 'gathering' ? rng.range(10, 18)
+      : w.phase === 'storm' ? rng.range(25, 45)
+      : rng.range(8, 14);
   }
-  if (w.forced) {
-    if (w.phase !== 'storm') {
-      w.phase = 'storm';
-      w.t = 0;
-    }
-    w.intensity = Math.min(1, w.intensity + dt * 0.25);
-    maybeBolt(w, rng);
-    return;
+  const target = w.phase === 'storm' ? 1 : w.phase === 'gathering' ? 0.45 : w.phase === 'clearing' ? 0.25 : 0;
+  w.intensity = clamp(w.intensity + (target - w.intensity) * dt * 0.35, 0, 1);
+  w.sky = w.intensity > 0.85 ? 'BAY STORM' : w.intensity > 0.4 ? 'RAIN' : w.intensity > 0.12 ? 'CLOUDY' : 'CLEAR';
+
+  // Lightning: a flash, then thunder a beat later.
+  if (w.phase === 'storm' && rng.chance(dt * 0.22)) {
+    w.flashes.push({ t: 0.22 });
+    w.lightningX = (cam ? cam.x : 0) + rng.range(-500, 500);
+    w.thunderAt = w.phaseT + rng.range(0.4, 1.4);
   }
-  const target = w.phase === 'storm' ? 1 : w.phase === 'clouds' ? 0.35 : 0;
-  w.intensity += (target - w.intensity) * Math.min(1, dt * 0.2);
-  if (w.phase === 'storm') maybeBolt(w, rng);
-  if (w.t >= w.nextChange) {
-    w.t = 0;
-    if (w.phase === 'clear') {
-      w.phase = 'clouds';
-      w.nextChange = PHASE_LEN.clouds;
-    } else if (w.phase === 'clouds') {
-      w.phase = 'storm';
-      w.nextChange = PHASE_LEN.storm;
-    } else if (w.phase === 'storm') {
-      w.phase = 'clearing';
-      w.nextChange = PHASE_LEN.clearing;
-    } else {
-      w.phase = 'clear';
-      w.nextChange = PHASE_LEN.clear * (0.7 + rng() * 0.8);
-    }
-  }
-}
+  for (const f of w.flashes) f.t -= dt;
+  w.flashes = w.flashes.filter(f => f.t > 0);
 
-function maybeBolt(w, rng) {
-  if (w.intensity > 0.5 && rng() < 0.012) {
-    w.lightning = 0.28;
-    w.thunderIn = 0.6 + rng() * 2.2;
-  }
-}
-
-// Grip multiplier for wet roads: 1 when dry, down to 0.72 in a full storm.
-export function gripOf(w) {
-  return 1 - 0.28 * w.intensity;
-}
-
-export function isRaining(w) {
-  return w.intensity > 0.15;
-}
-
-export function skyName(w) {
-  if (w.phase === 'storm') return 'BAY STORM';
-  if (w.phase === 'clouds') return 'CLOUDS';
-  if (w.phase === 'clearing') return 'CLEARING';
-  return 'CLEAR';
-}
-
-export function forceStorm(w, on) {
-  w.forced = on;
-  if (!on && w.phase === 'storm') {
-    w.phase = 'clearing';
-    w.t = 0;
-    w.nextChange = PHASE_LEN.clearing;
-  }
-}
-
-// Rain streaks for the renderer: deterministic from the frame counter, so a
-// screenshot scene draws the same rain every time it is staged.
-export function rainStreaks(frame, count, width, height, intensity) {
-  const out = [];
-  const n = Math.floor(count * intensity);
-  for (let i = 0; i < n; i++) {
-    const h1 = (i * 2654435761 + frame * 97) >>> 0;
-    const h2 = (i * 40503 + frame * 13) >>> 0;
-    out.push({
-      x: (h1 % 10000) / 10000 * width,
-      y: (h2 % 10000) / 10000 * height,
-      len: 14 + (h1 % 12),
+  // Rain streaks drift around the camera so the storm is visible anywhere.
+  const want = Math.floor(w.intensity * 220);
+  while (w.rain.length < want) {
+    w.rain.push({
+      x: (cam ? cam.x : 0) + rng.range(-700, 700),
+      y: (cam ? cam.y : 0) + rng.range(-420, 420),
+      len: rng.range(14, 30),
+      speed: rng.range(700, 1100),
     });
   }
-  return out;
+  if (w.rain.length > want) w.rain.length = want;
+  for (const d of w.rain) {
+    d.y += d.speed * dt;
+    d.x -= d.speed * 0.18 * dt;
+    if (cam && (d.y > cam.y + 460 || d.x < cam.x - 720)) {
+      d.y = cam.y - 430;
+      d.x = cam.x + rng.range(-700, 700);
+    }
+  }
+}
+
+// Wet roads: grip multiplier for driving, 1.0 dry to 0.82 in a full storm.
+export function wetGrip(w) {
+  return lerp(1, 0.82, w.intensity);
+}
+// Traffic slows a little when it rains.
+export function trafficFactor(w) {
+  return lerp(1, 0.78, w.intensity);
 }

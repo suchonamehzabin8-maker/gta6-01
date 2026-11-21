@@ -1,179 +1,163 @@
-// Palmera Bay — Sunset Run: combat.
-// Three weapons — pistol, spray gun, boomstick — plus fists, and the
-// pickups scattered around the bay: health, ammo and cash.
-
-import { WEAPONS, PLAYER } from './config.js';
-import { clamp } from './random.js';
-import { collideBuildings } from './city.js';
+// Combat — three weapons, punching, and the pickups the city hides. Shooting
+// is hitscan with spread: each pellet walks a short line and the first thing
+// it meets takes the damage.
+import { clamp, dist, angleTo } from './random.js';
+import { WEAPONS, WEAPON_ORDER, PLAYER } from './config.js';
 
 export function createCombat() {
   return {
-    bullets: [],
     weapon: 'pistol',
-    owned: { pistol: true, smg: false, boomstick: false },
-    ammo: { pistol: Infinity, smg: 0, boomstick: 0 },
+    ammo: { pistol: Infinity, smg: 0, shotgun: 0 },
     cooldown: 0,
-    punchT: 0,
-    particles: [],
+    punchCooldown: 0,
+    shotsFiredRecently: 0,
+    bullets: [], // tracer visuals {x,y,ax,ay,t}
+    pickups: [], // {kind:'health'|'ammo'|'cash', x, y, amount, weapon}
   };
 }
 
-export function currentWeapon(combat) {
-  return WEAPONS[combat.weapon];
+export function switchWeapon(G, dir) {
+  const owned = WEAPON_ORDER.filter(w => G.combat.ammo[w] > 0 || WEAPONS[w].infinite);
+  if (owned.length === 0) return;
+  const i = owned.indexOf(G.combat.weapon);
+  const next = owned[(i + dir + owned.length) % owned.length];
+  G.combat.weapon = next;
+  G.messages.push({ text: WEAPONS[next].name, t: 1.2, color: '#ffd166' });
 }
 
-export function switchWeapon(combat, name) {
-  if (combat.owned[name]) combat.weapon = name;
-}
-
-export function cycleWeapon(combat, dir) {
-  const order = ['pistol', 'smg', 'boomstick'].filter((w) => combat.owned[w]);
-  if (order.length < 2) return;
-  const i = order.indexOf(combat.weapon);
-  combat.weapon = order[(i + dir + order.length) % order.length];
-}
-
-export function giveWeapon(combat, name, ammo) {
-  combat.owned[name] = true;
-  combat.ammo[name] = (combat.ammo[name] || 0) + ammo;
-  combat.weapon = name;
-}
-
-// Fire from (x, y) along angle. Returns true if a shot went out.
-export function shoot(combat, x, y, angle) {
-  if (combat.cooldown > 0) return false;
-  const def = WEAPONS[combat.weapon];
-  if (combat.ammo[combat.weapon] !== Infinity) {
-    if (combat.ammo[combat.weapon] <= 0) return false;
-    combat.ammo[combat.weapon]--;
+export function fireWeapon(G) {
+  const c = G.combat;
+  const p = G.player;
+  if (c.cooldown > 0 || p.hp <= 0) return;
+  const w = WEAPONS[c.weapon];
+  if (!w.infinite && c.ammo[c.weapon] <= 0) {
+    switchWeapon(G, 1);
+    return;
   }
-  combat.cooldown = def.rate;
-  for (let i = 0; i < def.pellets; i++) {
-    const spread = (Math.random() - 0.5) * 2 * def.spread;
-    combat.bullets.push({
-      x: x + Math.cos(angle) * 24,
-      y: y + Math.sin(angle) * 24,
-      vx: Math.cos(angle + spread) * def.speed,
-      vy: Math.sin(angle + spread) * def.speed,
-      life: def.range / def.speed,
-      damage: def.damage,
-      kind: combat.weapon,
-    });
+  c.cooldown = w.rate;
+  if (!w.infinite) c.ammo[c.weapon]--;
+  c.shotsFiredRecently = 1.2;
+  G.audio.shot();
+  if (c.weapon === 'shotgun') G.audio.shotgun();
+  const base = p.aimAngle;
+  for (let i = 0; i < w.pellets; i++) {
+    const a = base + (G.rng.next() - 0.5) * 2 * w.spread;
+    shootPellet(G, p.x, p.y, a, w);
   }
-  return true;
+  if (p.vehicle) {
+    // Firing from a car spooks the street.
+    G.wanted.heat = Math.min(120, G.wanted.heat + 2);
+  }
 }
 
-// Move bullets; returns hit events {type:'hit-vehicle'|'hit-person'|'hit-wall', ...}.
-export function updateBullets(combat, dt, city, vehicles, people) {
-  const events = [];
-  combat.cooldown = Math.max(0, combat.cooldown - dt);
-  combat.punchT = Math.max(0, combat.punchT - dt);
-  for (let i = combat.bullets.length - 1; i >= 0; i--) {
-    const b = combat.bullets[i];
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
-    let dead = false;
-    // Buildings stop bullets.
-    const probe = { x: b.x, y: b.y };
-    if (collideBuildings(city, probe, 2)) {
-      events.push({ type: 'hit-wall', x: b.x, y: b.y });
-      dead = true;
-    }
-    if (!dead) {
-      for (const v of vehicles) {
-        if (v.wreck) continue;
-        const dx = b.x - v.x;
-        const dy = b.y - v.y;
-        if (dx * dx + dy * dy < 30 * 30) {
-          events.push({ type: 'hit-vehicle', vehicle: v, damage: b.damage, x: b.x, y: b.y });
-          dead = true;
-          break;
-        }
+function shootPellet(G, x, y, angle, w) {
+  const step = 14;
+  let cx = x, cy = y;
+  let hitX = x + Math.cos(angle) * w.range;
+  let hitY = y + Math.sin(angle) * w.range;
+  let hit = null;
+  for (let d = 0; d < w.range; d += step) {
+    cx = x + Math.cos(angle) * d;
+    cy = y + Math.sin(angle) * d;
+    const b = G.city.buildings.find(bd => cx >= bd.x && cx <= bd.x + bd.w && cy >= bd.y && cy <= bd.y + bd.h);
+    if (b) { hitX = cx; hitY = cy; break; }
+    const ped = G.peds.find(pd => pd.hp > 0 && dist(cx, cy, pd.x, pd.y) < 14);
+    if (ped) { hit = { kind: 'ped', target: ped }; hitX = cx; hitY = cy; break; }
+    const cop = G.cops.find(cp => cp.hp > 0 && dist(cx, cy, cp.x, cp.y) < 14);
+    if (cop) { hit = { kind: 'cop', target: cop }; hitX = cx; hitY = cy; break; }
+    const goon = G.peds.find(pd => pd.kind === 'goon' && pd.hp > 0 && dist(cx, cy, pd.x, pd.y) < 16);
+    if (goon) { hit = { kind: 'goon', target: goon }; hitX = cx; hitY = cy; break; }
+    for (const v of [...G.vehicles, ...G.traffic]) {
+      if (v.wreck) continue;
+      if (dist(cx, cy, v.x, v.y) < 20) {
+        hit = { kind: 'vehicle', target: v }; hitX = cx; hitY = cy; break;
       }
     }
-    if (!dead) {
-      for (const p of people) {
-        if (p.state === 'down') continue;
-        const dx = b.x - p.x;
-        const dy = b.y - p.y;
-        if (dx * dx + dy * dy < 18 * 18) {
-          events.push({ type: 'hit-person', person: p, damage: b.damage, x: b.x, y: b.y });
-          dead = true;
-          break;
-        }
+    if (hit) break;
+  }
+  G.combat.bullets.push({ x, y, ax: hitX, ay: hitY, t: 0.09 });
+  if (!hit) return;
+  if (hit.kind === 'vehicle') {
+    hit.target.damage = clamp(hit.target.damage + w.damage * 0.4, 0, 100);
+    if (hit.target.damage >= 100) hit.target.wreck = true;
+    return;
+  }
+  hit.target.hp -= w.damage;
+  G.wanted.heat = Math.min(120, G.wanted.heat + (hit.kind === 'cop' ? 12 : 5));
+  if (hit.target.hp <= 0) {
+    if (hit.kind === 'cop') G.wanted.heat = Math.min(120, G.wanted.heat + 10);
+    if (G.rng.chance(0.35)) {
+      G.combat.pickups.push({ kind: 'cash', x: hit.target.x, y: hit.target.y, amount: 40 });
+    }
+    G.messages.push({ text: hit.kind === 'goon' ? `${hit.target.name} is down!` : 'Target down', t: 1.4, color: '#ffd166' });
+  }
+}
+
+export function punch(G) {
+  const c = G.combat;
+  const p = G.player;
+  if (c.punchCooldown > 0 || p.hp <= 0) return;
+  c.punchCooldown = PLAYER.punchCooldown;
+  G.audio.punch();
+  const a = p.angle;
+  const hx = p.x + Math.cos(a) * PLAYER.punchRange;
+  const hy = p.y + Math.sin(a) * PLAYER.punchRange;
+  let struck = false;
+  for (const ped of G.peds) {
+    if (ped.hp <= 0) continue;
+    if (dist(hx, hy, ped.x, ped.y) < 26) {
+      ped.hp -= PLAYER.punchDamage;
+      struck = true;
+      if (ped.kind === 'goon' && ped.hp <= 0) {
+        G.messages.push({ text: `${ped.name} is down!`, t: 1.4, color: '#ffd166' });
       }
     }
-    b.life -= dt;
-    if (b.life <= 0) dead = true;
-    if (dead) combat.bullets.splice(i, 1);
   }
-  // Particles (muzzle flashes, impacts) age out on their own.
-  for (let i = combat.particles.length - 1; i >= 0; i--) {
-    const pt = combat.particles[i];
-    pt.life -= dt;
-    pt.x += pt.vx * dt;
-    pt.y += pt.vy * dt;
-    if (pt.life <= 0) combat.particles.splice(i, 1);
+  for (const cop of G.cops) {
+    if (cop.hp > 0 && dist(hx, hy, cop.x, cop.y) < 26) {
+      cop.hp -= PLAYER.punchDamage;
+      struck = true;
+      G.wanted.heat = Math.min(120, G.wanted.heat + 8);
+    }
   }
-  return events;
+  if (struck) G.wanted.heat = Math.min(120, G.wanted.heat + 2);
 }
 
-export function spawnBurst(combat, x, y, color, n = 8) {
-  for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
-    const s = 60 + Math.random() * 160;
-    combat.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.3 + Math.random() * 0.3, color });
+export function updateCombat(G, dt) {
+  const c = G.combat;
+  c.cooldown = Math.max(0, c.cooldown - dt);
+  c.punchCooldown = Math.max(0, c.punchCooldown - dt);
+  c.shotsFiredRecently = Math.max(0, c.shotsFiredRecently - dt);
+  for (const b of c.bullets) b.t -= dt;
+  c.bullets = c.bullets.filter(b => b.t > 0);
+  // Pickups: walk over them on foot.
+  const p = G.player;
+  for (const pk of c.pickups) {
+    if (p.onFoot && dist(p.x, p.y, pk.x, pk.y) < 26) {
+      if (pk.kind === 'health') {
+        p.hp = clamp(p.hp + 40, 0, PLAYER.maxHp);
+        G.messages.push({ text: '+40 health', t: 1.4, color: '#7bc47f' });
+      } else if (pk.kind === 'ammo') {
+        c.ammo[pk.weapon] = (c.ammo[pk.weapon] || 0) + pk.amount;
+        G.messages.push({ text: `+${pk.amount} ${WEAPONS[pk.weapon].name} ammo`, t: 1.4, color: '#ffd166' });
+      } else {
+        p.cash += pk.amount;
+        G.messages.push({ text: `+$${pk.amount}`, t: 1.4, color: '#7bc47f' });
+      }
+      G.audio.pickup();
+      pk.taken = true;
+    }
   }
+  c.pickups = c.pickups.filter(pk => !pk.taken);
 }
 
-// A punch: anything in the arc in front of the player takes damage.
-export function punch(combat, x, y, angle, people, vehicles) {
-  if (combat.punchT > 0) return [];
-  combat.punchT = PLAYER.punchCooldown;
-  const hits = [];
-  const range = PLAYER.punchRange;
-  for (const p of people) {
-    if (p.state === 'down') continue;
-    const dx = p.x - x;
-    const dy = p.y - y;
-    const d = Math.hypot(dx, dy);
-    if (d > range) continue;
-    const a = Math.atan2(dy, dx);
-    let diff = a - angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    if (Math.abs(diff) < PLAYER.punchArc) hits.push({ type: 'person', target: p });
+export function spawnStashPickups(G) {
+  // Weapon stashes become pickups the first time the player walks near one.
+  for (const s of G.city.stashes) {
+    G.combat.pickups.push({ kind: 'ammo', weapon: s.weapon, x: s.x, y: s.y, amount: s.weapon === 'smg' ? 240 : 24, stash: true });
   }
-  for (const v of vehicles) {
-    if (v.wreck) continue;
-    const dx = v.x - x;
-    const dy = v.y - y;
-    if (Math.hypot(dx, dy) < range + 10) hits.push({ type: 'vehicle', target: v });
+  // A few health kits around the map.
+  for (const [x, y] of [[1200, 900], [2600, 1600], [600, 1900], [3000, 800]]) {
+    G.combat.pickups.push({ kind: 'health', x, y, amount: 40 });
   }
-  return hits;
-}
-
-// --- Pickups ----------------------------------------------------------------
-
-export function spawnPickups(city) {
-  return [
-    { kind: 'health', x: 800, y: 700, taken: false },
-    { kind: 'health', x: 2100, y: 1200, taken: false },
-    { kind: 'health', x: 3100, y: 1300, taken: false },
-    { kind: 'ammo', x: 400, y: 2050, taken: false },
-    { kind: 'ammo', x: 2900, y: 2150, taken: false },
-    { kind: 'cash', x: 1200, y: 800, taken: false },
-    { kind: 'cash', x: 2400, y: 800, taken: false },
-    { kind: 'cash', x: 1600, y: 2200, taken: false },
-  ];
-}
-
-export function pickupNear(pickups, x, y, maxD = 30) {
-  for (const p of pickups) {
-    if (p.taken) continue;
-    const dx = p.x - x;
-    const dy = p.y - y;
-    if (dx * dx + dy * dy < maxD * maxD) return p;
-  }
-  return null;
 }

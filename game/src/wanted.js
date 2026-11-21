@@ -1,146 +1,171 @@
-// Palmera Bay — Sunset Run: the wanted system.
-// Heat rises with crime and falls when you lay low. Stars bring cruisers
-// that chase and ram, foot cops that arrest, roadblocks at 3 stars, and at
-// 4 stars a helicopter with a searchlight plus spike strips across the road.
-
-import { WORLD, HEAT } from './config.js';
-import { clamp, angleDiff, wrapAngle, rrange } from './random.js';
-import { nearestRoadPoint } from './city.js';
-import { makeCar, makeRoadblock, makeSpikeStrip } from './vehicles.js';
+// Wanted — heat, stars, and the Palmera Bay PD's answer: cruisers that chase
+// and ram, roadblocks at 3 stars, a helicopter and spike strips at 4 stars.
+// Heat decays faster when nobody can see you.
+import { clamp, dist, angleTo, angleDiff } from './random.js';
+import { STAR_HEAT, HEAT, WORLD } from './config.js';
+import { makeVehicle, damageVehicle } from './vehicles.js';
+import { nearestRoadPoint, isOnRoad } from './city.js';
 
 export function createWanted() {
   return {
     heat: 0,
     stars: 0,
     cruisers: [],
-    heli: null, // {x, y, angle, lightAngle}
+    heli: null,
     roadblocks: [],
-    strips: [],
+    spikes: [],
     spawnT: 0,
     blockT: 0,
-    stripT: 0,
+    spikeT: 0,
   };
 }
 
-export function starsFor(heat) {
-  let stars = 0;
-  for (const t of HEAT.thresholds) if (heat >= t) stars++;
-  return stars;
+export function starsForHeat(heat) {
+  let s = 0;
+  for (let i = 0; i < STAR_HEAT.length; i++) if (heat >= STAR_HEAT[i]) s = i + 1;
+  return s;
 }
 
-export function addHeat(w, amt) {
-  w.heat = clamp(w.heat + amt, 0, HEAT.max);
-  w.stars = starsFor(w.heat);
+export function addHeat(G, n) {
+  G.wanted.heat = clamp(G.wanted.heat + n, 0, HEAT.max);
 }
 
-export function updateWanted(w, dt, city, player, vehicles, people, rng, onEvent) {
-  // Heat fades; faster when no cruiser can see you.
-  const seen = w.cruisers.some((c) => {
-    const dx = c.x - player.x;
-    const dy = c.y - player.y;
-    return dx * dx + dy * dy < 420 * 420;
-  }) || (w.heli && Math.hypot(w.heli.x - player.x, w.heli.y - player.y) < 520);
-  const decay = seen ? HEAT.decayPerSec : HEAT.hiddenDecayPerSec;
-  if (w.heat > 0) {
-    w.heat = Math.max(0, w.heat - decay * dt);
-    w.stars = starsFor(w.heat);
-  }
+// Can any cop see the player? Distance to the nearest cruiser/cop/heli,
+// plus a little help from being on foot in the open.
+export function isHidden(G) {
+  const p = G.player;
+  let nearest = Infinity;
+  for (const c of G.wanted.cruisers) nearest = Math.min(nearest, dist(p.x, p.y, c.x, c.y));
+  for (const c of G.cops) nearest = Math.min(nearest, dist(p.x, p.y, c.x, c.y));
+  if (G.wanted.heli) nearest = Math.min(nearest, dist(p.x, p.y, G.wanted.heli.x, G.wanted.heli.y));
+  return nearest > 520;
+}
 
-  // Cruisers: one per star, up to 5, chasing along the roads.
-  const want = w.stars;
+function spawnCruiser(G) {
+  const p = G.player;
+  const spot = nearestRoadPoint(G.city, p.x + (G.rng.next() - 0.5) * 1400, p.y + (G.rng.next() - 0.5) * 1400);
+  const c = makeVehicle('car', spot.x, spot.y, '#1e3a5f', G.rng);
+  c.traffic = false;
+  c.parked = false;
+  c.cruiser = true;
+  c.targetSpeed = 0;
+  c.speed = 0;
+  G.wanted.cruisers.push(c);
+  return c;
+}
+
+function spawnRoadblock(G) {
+  const p = G.player;
+  const ahead = p.vehicle ? p.vehicle : p;
+  const a = p.angle;
+  const bx = clamp(ahead.x + Math.cos(a) * 420, 80, WORLD.w - 80);
+  const by = clamp(ahead.y + Math.sin(a) * 420, 80, WORLD.h - 80);
+  const spot = nearestRoadPoint(G.city, bx, by);
+  G.wanted.roadblocks.push({ x: spot.x, y: spot.y, angle: a + Math.PI / 2, t: 40 });
+  G.messages.push({ text: 'Roadblock ahead!', t: 2, color: '#ff8a80' });
+}
+
+function spawnSpikeStrip(G) {
+  const p = G.player;
+  const ahead = p.vehicle ? p.vehicle : p;
+  const a = p.angle;
+  const sx = clamp(ahead.x + Math.cos(a) * 300, 80, WORLD.w - 80);
+  const sy = clamp(ahead.y + Math.sin(a) * 300, 80, WORLD.h - 80);
+  const spot = nearestRoadPoint(G.city, sx, sy);
+  G.wanted.spikes.push({ x: spot.x, y: spot.y, angle: a, t: 30 });
+}
+
+export function updateWanted(G, dt) {
+  const w = G.wanted;
+  const p = G.player;
+  w.stars = starsForHeat(w.heat);
+  // Heat decay: faster hidden, slower while driving in the open.
+  const decay = isHidden(G) ? HEAT.decayHidden : (p.vehicle ? HEAT.decayDriving : HEAT.decayVisible);
+  w.heat = Math.max(0, w.heat - decay * dt);
+  w.stars = starsForHeat(w.heat);
+
+  // Cruisers: up to stars + 1 on the road, chasing along it.
+  const wantCruisers = w.stars === 0 ? 0 : Math.min(6, w.stars + 1);
   w.spawnT -= dt;
-  while (w.cruisers.length < want && w.spawnT <= 0) {
-    const p = nearestRoadPoint(city, player.x + rrange(rng, -500, 500), player.y + rrange(rng, -500, 500));
-    const cruiser = makeCar(p.x, p.y, 0, { driver: 'police', color: '#222831', model: 'cruiser' });
-    cruiser.police = true;
-    cruiser.speed = 300;
-    w.cruisers.push(cruiser);
-    vehicles.push(cruiser);
-    w.spawnT = 1.2;
+  if (w.cruisers.length < wantCruisers && w.spawnT <= 0) {
+    spawnCruiser(G);
+    w.spawnT = 2.5;
   }
-  // Despawn extras when the heat drops.
-  while (w.cruisers.length > want) {
-    const gone = w.cruisers.pop();
-    const idx = vehicles.indexOf(gone);
-    if (idx !== -1) vehicles.splice(idx, 1);
-  }
-
   for (const c of w.cruisers) {
     if (c.wreck) continue;
-    const targetAngle = Math.atan2(player.y - c.y, player.x - c.x);
-    c.angle += clamp(angleDiff(c.angle, targetAngle), -2.4 * dt, 2.4 * dt);
-    const wantSpeed = Math.min(520, 300 + w.stars * 40);
-    c.speed += (wantSpeed - c.speed) * Math.min(1, dt * 0.8);
-    c.x += Math.cos(c.angle) * c.speed * dt;
-    c.y += Math.sin(c.angle) * c.speed * dt;
-    c.x = clamp(c.x, 40, WORLD.w - 40);
-    c.y = clamp(c.y, 40, WORLD.h - 40);
-    // Ram the player: a hard hit hurts and shakes the car.
-    const dx = player.x - c.x;
-    const dy = player.y - c.y;
-    const d = Math.hypot(dx, dy);
-    if (d < 44 && player.vehicle) {
-      onEvent({ type: 'rammed', by: c });
-      c.speed *= 0.4;
-      c.x -= Math.cos(c.angle) * 30;
-      c.y -= Math.sin(c.angle) * 30;
-    } else if (d < 34 && !player.vehicle) {
-      onEvent({ type: 'arrested' });
+    const target = p.vehicle ? p.vehicle : p;
+    const a = angleTo(c.x, c.y, target.x, target.y);
+    const d = dist(c.x, c.y, target.x, target.y);
+    // Steer toward the player, but stay on roads where possible.
+    const wantAngle = a;
+    c.angle += clamp(angleDiff(c.angle, wantAngle), -2.4 * dt, 2.4 * dt);
+    const maxSpd = 300 + w.stars * 55;
+    c.speed = Math.min(maxSpd, c.speed + 320 * dt);
+    const nx = c.x + Math.cos(c.angle) * c.speed * dt;
+    const ny = c.y + Math.sin(c.angle) * c.speed * dt;
+    if (G.city.buildings.some(b => nx >= b.x - 8 && nx <= b.x + b.w + 8 && ny >= b.y - 8 && ny <= b.y + b.h + 8)) {
+      c.angle += Math.PI * 0.5 * dt * 4;
+    } else {
+      c.x = nx; c.y = ny;
+    }
+    c.x = clamp(c.x, 24, WORLD.w - 24);
+    c.y = clamp(c.y, 24, WORLD.h - 24);
+    // Ram the player's car.
+    if (p.vehicle && d < 34) {
+      damageVehicle(p.vehicle, 26 * dt);
+      p.vehicle.speed *= 0.94;
+      if (G.rng.chance(dt * 3)) G.audio.horn();
+    }
+    // Or run the player down on foot.
+    if (p.onFoot && d < 24) {
+      p.hp -= 20 * dt;
     }
   }
+  w.cruisers = w.cruisers.filter(c => !c.wreck && dist(c.x, c.y, p.x, p.y) < 2600);
 
-  // Helicopter at 4 stars: circles overhead, searchlight sweeping.
-  if (w.stars >= 4) {
-    if (!w.heli) w.heli = { x: player.x, y: player.y - 200, angle: 0, light: 0 };
-    const h = w.heli;
-    h.angle += dt * 0.7;
-    const tx = player.x + Math.cos(h.angle) * 180;
-    const ty = player.y + Math.sin(h.angle) * 180 - 60;
-    h.x += (tx - h.x) * Math.min(1, dt * 1.2);
-    h.y += (ty - h.y) * Math.min(1, dt * 1.2);
-    h.light = Math.atan2(player.y - h.y, player.x - h.x);
-  } else {
-    w.heli = null;
-  }
-
-  // Roadblocks at 3 stars: two cruisers parked across the road ahead.
+  // Roadblocks at 3 stars and up, refreshed on a timer.
   w.blockT -= dt;
-  if (w.stars >= 3 && w.blockT <= 0 && w.roadblocks.length < 2) {
-    const ahead = nearestRoadPoint(city, player.x + Math.cos(player.angle || 0) * 420, player.y + Math.sin(player.angle || 0) * 420);
-    if (ahead) {
-      w.roadblocks.push(makeRoadblock(ahead.x, ahead.y, ahead.horizontal ? 0 : Math.PI / 2));
-      w.blockT = 14;
-    }
+  if (w.stars >= 3 && w.roadblocks.length < 2 && w.blockT <= 0) {
+    spawnRoadblock(G);
+    w.blockT = 14;
   }
-  if (w.stars < 3) w.roadblocks = [];
+  for (const rb of w.roadblocks) rb.t -= dt;
+  w.roadblocks = w.roadblocks.filter(rb => rb.t > 0);
 
-  // Spike strips at 4 stars: dropped across the road ahead of the player.
-  w.stripT -= dt;
-  if (w.stars >= 4 && w.stripT <= 0 && w.strips.length < 2) {
-    const ahead = nearestRoadPoint(city, player.x + Math.cos(player.angle || 0) * 320, player.y + Math.sin(player.angle || 0) * 320);
-    if (ahead) {
-      w.strips.push(makeSpikeStrip(ahead.x, ahead.y, ahead.horizontal ? Math.PI / 2 : 0));
-      w.stripT = 11;
+  // Spike strips at 4 stars: drive over one and the tyres are gone.
+  w.spikeT -= dt;
+  if (w.stars >= 4 && w.spikes.length < 3 && w.spikeT <= 0) {
+    spawnSpikeStrip(G);
+    w.spikeT = 10;
+  }
+  for (const s of w.spikes) s.t -= dt;
+  w.spikes = w.spikes.filter(s => s.t > 0);
+  if (p.vehicle && !p.vehicle.tyresPopped) {
+    for (const s of w.spikes) {
+      if (dist(p.vehicle.x, p.vehicle.y, s.x, s.y) < 30) {
+        p.vehicle.tyresPopped = true;
+        G.messages.push({ text: 'Tyres popped! Get to a garage.', t: 2.5, color: '#ff8a80' });
+        G.audio.badJingle();
+        break;
+      }
     }
   }
-  if (w.stars < 4) w.strips = [];
-}
 
-// A vehicle crossing a live strip loses its tyres.
-export function checkSpikeStrips(w, vehicle) {
-  if (!vehicle || vehicle.wreck) return false;
-  for (const s of w.strips) {
-    if (s.used) continue;
-    const dx = vehicle.x - s.x;
-    const dy = vehicle.y - s.y;
-    const along = Math.abs(dx * Math.cos(s.angle) + dy * Math.sin(s.angle));
-    const across = Math.abs(-dx * Math.sin(s.angle) + dy * Math.cos(s.angle));
-    if (along < s.w / 2 && across < 26) {
-      s.used = true;
-      vehicle.tyres = 0;
-      vehicle.speed *= 0.35;
-      return true;
+  // The helicopter circles at 4 stars, keeping the player visible.
+  if (w.stars >= 4 && !w.heli) {
+    w.heli = { x: p.x, y: p.y - 300, angle: 0, t: 0 };
+    G.messages.push({ text: 'Police helicopter overhead!', t: 2, color: '#ff8a80' });
+  }
+  if (w.heli) {
+    if (w.stars < 4) w.heli = null;
+    else {
+      w.heli.t += dt;
+      const a = w.heli.t * 0.55;
+      w.heli.x = p.x + Math.cos(a) * 260;
+      w.heli.y = p.y + Math.sin(a) * 260 - 60;
+      w.heli.angle = a + Math.PI / 2;
     }
   }
-  return false;
+  G.audio.setSiren(w.stars >= 1 && w.cruisers.length > 0);
+  G.audio.setRotor(!!w.heli);
 }

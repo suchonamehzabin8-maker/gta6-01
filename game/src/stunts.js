@@ -1,67 +1,51 @@
-// Palmera Bay — Sunset Run: stunt jumps.
-// Four wooden ramps around the bay. Hit one fast and you fly: air time and
-// distance pay cash, and beating your best jump pays a bonus.
-
-export function rampNear(city, x, y, maxD = 70) {
-  for (const r of city.ramps) {
-    const dx = x - r.x;
-    const dy = y - r.y;
-    if (dx * dx + dy * dy < maxD * maxD) return r;
-  }
-  return null;
-}
+// Stunts — four wooden ramps around the bay. Hit one fast and the car flies;
+// air time and distance pay cash, and beating your best jump pays a bonus.
+import { dist } from './random.js';
+import { STUNT } from './config.js';
 
 export function createStunts() {
-  return {
-    air: null, // {t, dist, startX, startY, speed} while airborne
-    best: 0, // best jump score so far
-    bestDist: 0,
-    lastPayout: 0,
-  };
+  return { bestAir: 0, bestDist: 0, current: null };
 }
 
-// Called when the player's vehicle crosses a ramp fast enough.
-export function startJump(stunts, ramp, vehicle) {
-  const speed = Math.abs(vehicle.speed);
-  if (speed < 260) return false;
-  stunts.air = {
-    t: 0,
-    dist: 0,
-    speed,
-    x: vehicle.x,
-    y: vehicle.y,
-  };
-  return true;
-}
-
-// While airborne the car keeps its heading and covers ground. Returns a
-// payout event on landing, or null while still flying.
-export function updateAir(stunts, vehicle, dt) {
-  if (!stunts.air) return null;
-  const air = stunts.air;
-  air.t += dt;
-  const step = air.speed * dt;
-  air.dist += step;
-  vehicle.x += Math.cos(vehicle.angle) * step;
-  vehicle.y += Math.sin(vehicle.angle) * step;
-  // Air time scales with launch speed, capped so jumps stay snappy.
-  const airTime = Math.min(1.6, 0.5 + air.speed / 700);
-  if (air.t >= airTime) {
-    const score = Math.round(air.dist * 0.6 + air.t * 120);
-    const isBest = score > stunts.best;
-    let payout = 20 + Math.round(air.dist * 0.4);
-    if (isBest) {
-      stunts.best = score;
-      stunts.bestDist = air.dist;
-      payout += 100;
+export function updateStunts(G, dt) {
+  const p = G.player;
+  const v = p.vehicle;
+  const st = G.stats;
+  if (!v || v.wreck) return;
+  // Launch: fast, on a ramp, not already airborne.
+  if (!v.airborne) {
+    for (const r of G.city.ramps) {
+      if (dist(v.x, v.y, r.x, r.y) < 34 && Math.abs(v.speed) > 380) {
+        const along = Math.cos(v.angle - r.angle);
+        if (along > 0.55) {
+          v.airborne = 1;
+          v.airT = 0;
+          v.airStart = { x: v.x, y: v.y };
+          G.messages.push({ text: 'Airborne!', t: 1, color: '#ffd166' });
+        }
+      }
     }
-    stunts.lastPayout = payout;
-    stunts.air = null;
-    return { payout, score, isBest, dist: air.dist };
+    return;
   }
-  return null;
-}
-
-export function isAirborne(stunts) {
-  return stunts.air !== null;
+  // Airborne: the clock runs until the wheels touch down again.
+  v.airT += dt;
+  const speed = Math.abs(v.speed);
+  v.airborne = v.airT < 0.9 + speed / 900 ? 1 : 0;
+  if (v.airborne) return;
+  // Landed.
+  const airDist = dist(v.x, v.y, v.airStart.x, v.airStart.y);
+  const pay = Math.round(v.airT * STUNT.perSecondAir + airDist * STUNT.perMetre);
+  let bonus = 0;
+  if (v.airT > st.bestAir) {
+    st.bestAir = v.airT;
+    bonus += STUNT.bestBonus;
+  }
+  if (airDist > st.bestDist) st.bestDist = airDist;
+  p.cash += pay + bonus;
+  G.messages.push({
+    text: `Stunt! ${v.airT.toFixed(1)}s air, ${Math.round(airDist)}m — +$${pay + bonus}`,
+    t: 2.6, color: '#7bc47f',
+  });
+  G.audio.cash();
+  v.airStart = null;
 }
