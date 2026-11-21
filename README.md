@@ -45,7 +45,7 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 - `game/src/radio.js` — three live-synthesised radio stations (Sunset FM, Neon Nights, Coral Chill)
 - `game/src/audio.js` — synthesised WebAudio sound (car and bike engines, sirens, rotor, gunshots, rain, thunder, jingles) — no audio files
 - `game/src/render.js` + `game/src/minimap.js` — the golden-hour city, day/night lighting, rain and lightning, HUD, minimap (now with garages, ramps and goons), menus, pause-screen stats, photo mode
-- `game/src/shots.js` — deterministic screenshot scenes (`?shot=chase|play|race|title`); the chase scene stages a bay storm
+- `game/src/shots.js` — deterministic screenshot scenes (`?shot=chase|pier|race|title`); the chase scene stages a bay storm
 
 ## Originality
 

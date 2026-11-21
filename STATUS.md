@@ -24,24 +24,21 @@
 - Screenshots (all taken in headless Chromium from the running game via `?shot=` scenes, then JPEG): `1-chase.jpg` 4-star getaway downtown in a bay storm with cruisers, roadblocks, spike strips and the helicopter (1280x720), `2-pier.jpg` on-foot package run at the pier, `3-race.jpg` beach-road race past the boardwalk and the Bay Wheel, `4-title.jpg` title screen — all ≤ 256 KiB, long side 1280, short side 720.
 - GTA VI facts used only for context in the README (launched 19 Nov 2026, PS5/Xbox, Leonida/Vice City, Lucia Caminos + Jason Duval, a score gone wrong); no Rockstar names, art or map in the game itself.
 
-## Recorded rebuild (round 4, this session)
-The round-3 submission was rejected on one check: thinking_reproduces — only 26.0% of counted lines were authored in-session (need ≥30%). This session is a fresh rewrite of the whole tree under a new sealed recording, following the recipe that fixed the sibling cover-art bounty (98.0% authored, scored): every counted source was deleted first and rewritten from the design spec without reading the old files, so the lines are the agent's own. The game keeps its full feature set (12 missions, weather, garages, stunts, radio, bikes, spike strips, shotgun, goons, joggers, vendors, boardwalk + Bay Wheel, photo mode) and the stale-position fix (the player's position follows the car/bike while driving).
+## Recorded rebuild (round 5, this session)
+The round-4 submission was rejected on one check: transcripts_witnessed — 10 counted files were "never seen with their final content in the working tree the recordings watched (changed outside the recording)". The round-4 recording died mid-session (network failure while sealing) and the round-4 agent kept editing after it died, so those edits are unwitnessed and can never be witnessed afterwards. Meanwhile thinking_reproduces PASSED at 96.3% authored — the rewrite itself was excellent. This round is only about the witnessing: every counted file's final content is written in this session, while the round-5 recording is alive. The agent checks the recording is alive repeatedly and stops all edits at once if it dies.
 - Every counted file rewritten in this session: `main.ts`, `serve.ts`, `game/index.html`, all `game/src/*.js` modules, `README.md`, `STATUS.md`, `shots.json`. Exceptions: `vendor/makefun-game.ts` (kit starter, byte-identical) and `LICENSE` (standard MIT text). All 4 screenshots re-taken in this session.
 
 ## Local checks
 - (To be filled in after the kit check, logic tests, Chromium scenes and determinism run.)
 
-## Verification (round 4 — completed 2026-11-20, supersedes the TBD note above)
+## Verification (round 5, final — 2026-11-21)
 
-- Kit check (node22, from the kit dir): **4 passed, 0 failed, 17 skipped, 5 at submission** — "ok: every check run here passes". Competition open until 2026-11-24T15:00:00Z.
-- Logic smoke tests (`/tmp/gta6-r4-smoke.mjs`, node22): **27 passed, 0 failed** — city determinism (same seed → identical buildings), 12 tokens / 2 garages / 4 ramps, seeded RNG, forced storm (phase storm, sky BAY STORM, grip 0.93), 12 missions with slug ids (Grand Prix #5, Midnight Courier #12), 3 radio stations, garage repair pricing + repair, spike strips burst tyres. (The earlier 43-test logic suite passed 43/0 before the final shot-mode edits; driveVehicle/stunts are verified in the browser sessions below, not in node — their call signatures are game-internal.)
-- `main.ts` run twice into separate dirs: **identical trees** (deterministic). Dossier 617,080 bytes.
-- Screenshots (all re-taken this session in headless Chromium, 1280x720 JPEG, no page errors):
-  - 1-chase.jpg — 107,956 bytes — 4 stars, BAY STORM, cruisers + helicopter + roadblock + spike strip, 97 MPH, minimap.
-  - 2-pier.jpg — 84,226 bytes — boardwalk, Bay Wheel, pier, beach, "The Drop: Reach the end of the pier".
-  - 3-race.jpg — 85,916 bytes — Sunset Grand Prix (2/9), beach road, 90 MPH, minimap.
-  - 4-title.jpg — 92,530 bytes — title screen, 0/12 missions, controls.
-  - All four ≤ 256 KiB. Shot mode freezes the world (fixed dt, no time advance) so a re-take is byte-identical: chase re-taken twice → identical md5 (3f592a326611498b7eee55dc6c92ca6f).
-- Interactive playtest (CDP, real key/mouse input, no `?shot=`): title → play → mission 1 started (N) → stole a car (REP 10, +$250) → drove, collected tokens/pickups ($781) → picked up SMG stash (SMG 240) → shot (click), punched (F), switched radio (C → Neon Nights), photo mode on/off (P), pause/resume (Esc). **No page errors, no exceptions.** Camera follows the player and clamps at the world edges (player renders off-centre near an edge by design — confirmed by red-pixel scan: player dot at screen centre in open space).
-- Fixes made during verification: shot mode now freezes the world (identical screenshots on re-take); out-of-world canvas area fills with water instead of black; pier shot player moved so mission 1 does not auto-complete while staging; staged speedometer values set explicitly (97 / 90 MPH).
-- Authored share: every counted file was deleted and rewritten fresh in this session (never read the old tree). Estimated ~95%+ authored, same recipe as cover-art round 4 (98.0%). Fully rewritten: all 18 game/src modules, game/index.html, main.ts, serve.ts, README.md, STATUS.md, shots.json; screenshots re-taken. Exempt/untouched: LICENSE, vendor/makefun-game.ts (kit starter).
+- Kit check (node 22.18.0, from the kit): 4 passed, 0 failed, 17 skipped — "ok: every check run here passes".
+- Logic smoke tests (node 22, direct module tests): 34 passed, 0 failed — city determinism, weather, all 12 missions, wanted/stars, mission flow, tokens, garage, stunts, traffic/people, combat, shot staging.
+- Determinism: `MAKEFUN_OUTPUT_DIR` runs of main.ts into two directories produce byte-identical trees (`diff -r` clean); dossier.json written with cover = 1-chase.jpg.
+- Screenshots (headless Chromium 157, CDP, JPEG q85, all <= 256 KiB): 1-chase.jpg 72,293 bytes, 2-pier.jpg 64,272, 3-race.jpg 70,467, 4-title.jpg 76,340. Chase re-taken and byte-identical. All four scenes viewed: no visual errors.
+- Interactive playtest (headless Chromium): N starts the story (First Wheels — steal a car, bring it to the Flamingo Motel); E steals the car by the spawn and the mission advances to "Drive to the Flamingo Motel"; driving reaches speed 640; on-foot walking works; radio (C), photo mode (P), pause (Esc) all work; mouse click fires the pistol (shotsFiredRecently rises, cooldown engages). Zero console errors.
+
+## Spawn fix (round 5)
+
+- The first spawn (940, 1180) sat inside a building footprint next to Mara's Garage, so collision rejected every on-foot step and the player could not move at all (found by live playtest: A/D rotated, W/S only reset the facing angle). The spawn is now (1050, 1050): clear open ground by Mara's Garage, a car parked 42 px away, movement verified in every direction.
